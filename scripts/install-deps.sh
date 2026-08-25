@@ -22,15 +22,21 @@ case "${ID:-}" in
         ;;
     ubuntu|debian)
         apt-get update
-        apt-get install -y git build-essential pkg-config qmake6 \
+        apt-get install -y git build-essential pkg-config qmake6 cmake \
+            autoconf automake libtool python3-venv vulkan-tools \
             qt6-base-dev qt6-declarative-dev libqt6svg6-dev qt6-wayland \
             qml6-module-qtquick-controls qml6-module-qtquick-templates \
             qml6-module-qtquick-layouts qml6-module-qtqml-workerscript \
             qml6-module-qtquick-window qml6-module-qtquick \
-            libegl1-mesa-dev libgl1-mesa-dev libopus-dev libsdl2-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev \
+            libgbm-dev libopus-dev libsdl2-dev \
             libsdl2-ttf-dev libssl-dev libavcodec-dev libavformat-dev \
             libswscale-dev libva-dev libvdpau-dev libxkbcommon-dev \
-            wayland-protocols libdrm-dev libvulkan-dev libplacebo-dev \
+            libasound2-dev libdbus-1-dev libibus-1.0-dev libpulse-dev \
+            libudev-dev libfreetype-dev libpipewire-0.3-dev libdecor-0-dev \
+            libx11-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev \
+            libxrandr-dev libxss-dev libxt-dev libxv-dev libxxf86vm-dev \
+            libwayland-dev wayland-protocols libdrm-dev libvulkan-dev libplacebo-dev \
             libv4l-dev meson ninja-build python3-jinja2 glslang-dev \
             libshaderc-dev nasm yasm
         ;;
@@ -39,3 +45,4 @@ case "${ID:-}" in
         exit 2
         ;;
 esac
+

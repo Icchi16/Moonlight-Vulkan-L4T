@@ -13,25 +13,45 @@ deps_prefix="$BUILD_DIR/deps/prefix"
 export PKG_CONFIG_PATH="$deps_prefix/lib/aarch64-linux-gnu/pkgconfig:$deps_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 export LD_LIBRARY_PATH="$deps_prefix/lib/aarch64-linux-gnu:$deps_prefix/lib:${LD_LIBRARY_PATH:-}"
 
-if ! pkg-config --atleast-version=6.1 libavcodec; then
-    note "Build FFmpeg Moonlight fork cho L4T (FFmpeg hệ thống < 6.1)"
+# Nintendo Switch dùng L4T R32 và cần fork FFmpeg có decoder NVV4L2.
+# Commit này là submodule FFmpeg-l4t-new trong cgutman/moonlight-packaging.
+ffmpeg_l4t_commit="93133c040cff97b99046612dac7219844a55f3b8"
+ffmpeg_marker="$deps_prefix/.ffmpeg-l4t-commit"
+if [[ ! -f "$ffmpeg_marker" ]] || [[ $(<"$ffmpeg_marker") != "$ffmpeg_l4t_commit" ]]; then
+    [[ -e /dev/nvhost-nvdec ]] || \
+        die "Không tìm thấy /dev/nvhost-nvdec. Hãy boot bằng kernel/BSP Switchroot L4T đúng bản."
+    ldconfig -p 2>/dev/null | grep -q 'libnvbuf_utils\.so' || \
+        die "Thiếu libnvbuf_utils của NVIDIA L4T. Hãy cập nhật Switchroot BSP."
+
+    note "Build FFmpeg 6.1.1 NVV4L2 dành riêng cho Switchroot L4T"
     ff_src="$BUILD_DIR/deps/ffmpeg"
     ff_build="$BUILD_DIR/deps/ffmpeg-build"
     if [[ ! -d "$ff_src/.git" ]]; then
-        git clone https://github.com/cgutman/FFmpeg.git "$ff_src"
+        git clone https://github.com/theofficialgman/FFmpeg.git "$ff_src"
     fi
-    git -C "$ff_src" fetch origin
-    # Cùng commit FFmpeg với manifest Flathub đã đối chiếu.
-    git -C "$ff_src" checkout --detach d17de7e33f1332cc2fb3f5afab9ed4f29699c5a0
+    git -C "$ff_src" remote set-url origin https://github.com/theofficialgman/FFmpeg.git
+    git -C "$ff_src" fetch origin 6.1.1-nvv4l2
+    git -C "$ff_src" checkout --detach "$ffmpeg_l4t_commit"
     rm -rf -- "$ff_build"
     mkdir -p "$ff_build"
     (cd "$ff_build" && "$ff_src/configure" \
-        --prefix="$deps_prefix" --enable-shared --disable-static \
-        --disable-programs --disable-doc --enable-pic --enable-libdrm \
+        --arch=aarch64 --prefix="$deps_prefix" \
+        --fatal-warnings --enable-pic --enable-shared --disable-static \
+        --disable-all --disable-vulkan --enable-avcodec --enable-swscale \
+        --enable-libdrm --extra-cflags=-I/usr/include/libdrm \
+        --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=vp9 \
         --enable-decoder=h264_v4l2m2m \
-        --enable-decoder=hevc_v4l2m2m)
+        --enable-decoder=hevc_v4l2m2m \
+        --enable-nvv4l2 \
+        --enable-decoder=h264_nvv4l2 \
+        --enable-decoder=hevc_nvv4l2)
+    grep -q '#define CONFIG_H264_NVV4L2_DECODER 1' "$ff_build/config.h" || \
+        die "FFmpeg configure không enable h264_nvv4l2. Kiểm tra libv4l-dev và Switchroot BSP."
+    grep -q '#define CONFIG_HEVC_NVV4L2_DECODER 1' "$ff_build/config.h" || \
+        die "FFmpeg configure không enable hevc_nvv4l2."
     make -C "$ff_build" -j"$JOBS"
     make -C "$ff_build" install
+    printf '%s\n' "$ffmpeg_l4t_commit" > "$ffmpeg_marker"
 fi
 
 if ! PKG_CONFIG_PATH="$deps_prefix/lib/aarch64-linux-gnu/pkgconfig:$deps_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \

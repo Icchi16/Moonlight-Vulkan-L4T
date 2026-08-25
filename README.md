@@ -58,19 +58,32 @@ bash ./scripts/build-native.sh
 
 ### Switchroot / Switch-L4T arm64
 
-Chạy trực tiếp trên Switch-L4T Ubuntu 22.04/24.04 hoặc Fedora:
+Script cài bản nightly song song, không xóa hoặc ghi đè bản `moonlight-qt`
+stable do L4T Megascript cài. Chạy trực tiếp trên Switchroot Ubuntu
+22.04/24.04:
 
 ```bash
-sudo bash ./scripts/install-deps.sh
-bash ./scripts/build-l4t.sh
-./dist/moonlight-vulkan
+bash ./scripts/bootstrap-l4t.sh
 ```
+
+Sau khi build, mở **Moonlight Nightly (Vulkan)** trong menu ứng dụng hoặc chạy
+`~/.local/bin/moonlight-nightly-vulkan`. Lần build đầu sẽ lâu vì script build
+dependency L4T; các lần sau dùng lại cache trong `build/deps`.
+
+Nếu màn hình đăng nhập cho chọn session, ưu tiên **Plasma (Wayland)** hoặc
+**Ubuntu on Wayland**. Launcher sẽ dùng Qt Wayland native khi session hiện tại
+là Wayland; nó không ép Wayland khi bạn đang đăng nhập X11.
 
 Trên Switch-L4T, script luôn dùng FFmpeg 6.1.1 NVV4L2 của Switchroot
 (`h264_nvv4l2`/`hevc_nvv4l2`) để giữ hardware decoding trên Tegra, và
-build libplacebo Vulkan vào prefix nội bộ trong `build/deps`. Script không
-dùng `CONFIG+=vulkanslow/gpuslow`, vì hai option này cố tình hạ ưu
-tiên Vulkan.
+build libplacebo Vulkan vào prefix nội bộ trong `build/deps`. SDL2/SDL_ttf
+được pin theo Moonlight L4T packaging và SDL2 được build với KMSDRM. Script
+không dùng `CONFIG+=vkslow/gpuslow`, đồng thời tắt VAAPI/VDPAU cho binary L4T
+để không probe nhầm renderer desktop.
+
+Nightly mang các thay đổi UI, protocol và bugfix mới nhất từ `master`.
+Nintendo Switch vẫn dùng H.264/HEVC NVV4L2; AV1 không có hardware decode trên
+Tegra X1 nên không được bật chỉ vì dùng bản nightly.
 
 ## Pin commit để build lại đúng một bản
 
@@ -107,3 +120,4 @@ time` và `Frames dropped by network` trước khi kết luận latency giảm.
 Trên Switchroot, log stream phải có decoder `h264_nvv4l2` hoặc
 `hevc_nvv4l2` và dòng `Using Vulkan renderer`. Nếu không có `nvv4l2`, không
 nên benchmark latency vì Moonlight có thể đang decode bằng CPU.
+

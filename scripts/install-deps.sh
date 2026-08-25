@@ -31,7 +31,8 @@ case "${ID:-}" in
             libsdl2-ttf-dev libssl-dev libavcodec-dev libavformat-dev \
             libswscale-dev libva-dev libvdpau-dev libxkbcommon-dev \
             wayland-protocols libdrm-dev libvulkan-dev libplacebo-dev \
-            meson ninja-build python3-jinja2 glslang-dev libshaderc-dev nasm yasm
+            libv4l-dev meson ninja-build python3-jinja2 glslang-dev \
+            libshaderc-dev nasm yasm
         ;;
     *)
         echo "Distro '${ID:-unknown}' chưa được hỗ trợ." >&2

@@ -66,9 +66,11 @@ bash ./scripts/build-l4t.sh
 ./dist/moonlight-vulkan
 ```
 
-Trên Ubuntu L4T, nếu FFmpeg hoặc `libplacebo-dev` của hệ thống quá cũ,
-script build bản tương thích vào prefix nội bộ trong `build/deps`. Không dùng
-`CONFIG+=vulkanslow/gpuslow`, vì hai option này cố tình hạ ưu tiên Vulkan.
+Trên Switch-L4T, script luôn dùng FFmpeg 6.1.1 NVV4L2 của Switchroot
+(`h264_nvv4l2`/`hevc_nvv4l2`) để giữ hardware decoding trên Tegra, và
+build libplacebo Vulkan vào prefix nội bộ trong `build/deps`. Script không
+dùng `CONFIG+=vulkanslow/gpuslow`, vì hai option này cố tình hạ ưu
+tiên Vulkan.
 
 ## Pin commit để build lại đúng một bản
 
@@ -101,3 +103,7 @@ Vulkan renderer không tự động đồng nghĩa với Vulkan Video decoding.
 Renderer có thể nhận frame từ VAAPI/NVDEC/V4L2; decoder thực tế phụ thuộc
 driver, FFmpeg và GPU. Hãy so sánh `Average decoding time`, `Average rendering
 time` và `Frames dropped by network` trước khi kết luận latency giảm.
+
+Trên Switchroot, log stream phải có decoder `h264_nvv4l2` hoặc
+`hevc_nvv4l2` và dòng `Using Vulkan renderer`. Nếu không có `nvv4l2`, không
+nên benchmark latency vì Moonlight có thể đang decode bằng CPU.

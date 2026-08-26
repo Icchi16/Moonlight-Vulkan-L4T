@@ -216,6 +216,12 @@ qmake_log="$moonlight_build/qmake.log"
 (cd "$moonlight_build" && qmake6 "${qmake_args[@]}" \
     "QMAKE_RPATHDIR=$deps_prefix/lib $deps_prefix/lib/aarch64-linux-gnu" \
     "$source_dir/moonlight-qt.pro") 2>&1 | tee "$qmake_log"
+
+# moonlight-qt.pro dùng TEMPLATE=subdirs. Lần qmake ở trên chỉ cấu hình project
+# cấp gốc; app/app.pro (nơi tự dò FFmpeg/libplacebo/Wayland) chỉ được chạy bởi
+# qmake_all hoặc trong lúc make. Chạy riêng target này để kiểm tra feature trước
+# khi bắt đầu compile dài.
+make -C "$moonlight_build" qmake_all 2>&1 | tee -a "$qmake_log"
 grep -Fq "FFmpeg decoder selected" "$qmake_log" || \
     die "qmake không enable FFmpeg decoder. Xem $qmake_log"
 grep -Fq "Vulkan support enabled via libplacebo" "$qmake_log" || \

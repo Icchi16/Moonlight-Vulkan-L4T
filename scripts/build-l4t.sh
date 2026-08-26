@@ -10,6 +10,12 @@ need pkg-config
 need python3
 need vulkaninfo
 
+# GitHub đôi lúc ngắt các clone HTTP/2 dài trên mạng chậm của Switchroot.
+# Chỉ áp dụng cho build này, không sửa Git config toàn hệ thống của người dùng.
+git() {
+    command git -c http.version=HTTP/1.1 "$@"
+}
+
 if [[ -r /proc/device-tree/compatible ]]; then
     compatible=$(tr '\0' '\n' < /proc/device-tree/compatible)
     grep -Eqi 'nvidia,tegra(210)?' <<<"$compatible" || \
@@ -65,7 +71,7 @@ if [[ ! -f "$sdl_marker" ]] || [[ $(<"$sdl_marker") != "$packaging_commit" ]] ||
     git -C "$packaging_src" fetch origin "$packaging_commit"
     git -C "$packaging_src" checkout --detach "$packaging_commit"
     git -C "$packaging_src" submodule sync --recursive
-    git -C "$packaging_src" submodule update --init SDL2 SDL_ttf
+    git -C "$packaging_src" submodule update --init --depth 1 SDL2 SDL_ttf
 
     sdl_build="$BUILD_DIR/deps/sdl2-build"
     sdl_ttf_build="$BUILD_DIR/deps/sdl-ttf-build"
@@ -138,7 +144,7 @@ if [[ ! -f "$libplacebo_marker" ]] || [[ $(<"$libplacebo_marker") != "$libplaceb
     # Bundled Vulkan-Headers có header Vulkan 1.4 mới để compile, trong khi
     # binary vẫn chỉ yêu cầu Vulkan 1.2 mà L4T R32 hỗ trợ.
     git -C "$pl_src" submodule sync --recursive
-    git -C "$pl_src" submodule update --init --recursive
+    git -C "$pl_src" submodule update --init --recursive --depth 1
     rm -rf -- "$pl_build"
     "$meson_cmd" setup "$pl_build" "$pl_src" \
         --prefix="$deps_prefix" --libdir=lib \

@@ -60,6 +60,10 @@ meson_is_new_enough "$meson_cmd" || die "Cần Meson >= 1.3.0."
 # Dùng đúng SDL2/SDL_ttf mà pipeline L4T chính thức của Moonlight đang pin.
 packaging_commit="87b7904f0bfdfc32af155c92376868e489770079"
 sdl_marker="$deps_prefix/.moonlight-sdl-packaging-commit"
+sdl_force_rebuild=0
+if [[ -f "$sdl_marker" ]] && [[ $(<"$sdl_marker") != "$packaging_commit" ]]; then
+    sdl_force_rebuild=1
+fi
 if [[ ! -f "$sdl_marker" ]] || [[ $(<"$sdl_marker") != "$packaging_commit" ]] || \
         [[ ! -f "$deps_prefix/lib/pkgconfig/sdl2.pc" ]] || \
         [[ ! -f "$deps_prefix/lib/pkgconfig/SDL2_ttf.pc" ]]; then
@@ -71,24 +75,34 @@ if [[ ! -f "$sdl_marker" ]] || [[ $(<"$sdl_marker") != "$packaging_commit" ]] ||
     git -C "$packaging_src" fetch origin "$packaging_commit"
     git -C "$packaging_src" checkout --detach "$packaging_commit"
     git -C "$packaging_src" submodule sync --recursive
-    git -C "$packaging_src" submodule update --init --depth 1 SDL2 SDL_ttf
+    git -C "$packaging_src" submodule update --init --recursive --depth 1 SDL2 SDL_ttf
 
     sdl_build="$BUILD_DIR/deps/sdl2-build"
     sdl_ttf_build="$BUILD_DIR/deps/sdl-ttf-build"
-    rm -rf -- "$sdl_build" "$sdl_ttf_build"
-    mkdir -p "$sdl_build" "$sdl_ttf_build"
-    (cd "$sdl_build" && "$packaging_src/SDL2/configure" \
-        --prefix="$deps_prefix" --libdir="$deps_prefix/lib" \
-        --enable-shared --disable-static --enable-video-kmsdrm --disable-video-rpi)
-    make -C "$sdl_build" -j"$JOBS"
-    make -C "$sdl_build" install
+    if (( sdl_force_rebuild )) || [[ ! -f "$deps_prefix/lib/pkgconfig/sdl2.pc" ]]; then
+        rm -rf -- "$sdl_build"
+        mkdir -p "$sdl_build"
+        (cd "$sdl_build" && "$packaging_src/SDL2/configure" \
+            --prefix="$deps_prefix" --libdir="$deps_prefix/lib" \
+            --enable-shared --disable-static --enable-video-kmsdrm --disable-video-rpi)
+        make -C "$sdl_build" -j"$JOBS"
+        make -C "$sdl_build" install
+    else
+        note "Dùng lại SDL2 KMSDRM đã build xong"
+    fi
 
-    (cd "$packaging_src/SDL_ttf" && ./autogen.sh)
-    (cd "$sdl_ttf_build" && "$packaging_src/SDL_ttf/configure" \
-        --prefix="$deps_prefix" --libdir="$deps_prefix/lib" \
-        --enable-shared --disable-static)
-    make -C "$sdl_ttf_build" -j"$JOBS"
-    make -C "$sdl_ttf_build" install
+    if (( sdl_force_rebuild )) || [[ ! -f "$deps_prefix/lib/pkgconfig/SDL2_ttf.pc" ]]; then
+        rm -rf -- "$sdl_ttf_build"
+        mkdir -p "$sdl_ttf_build"
+        (cd "$packaging_src/SDL_ttf" && ./autogen.sh)
+        (cd "$sdl_ttf_build" && "$packaging_src/SDL_ttf/configure" \
+            --prefix="$deps_prefix" --libdir="$deps_prefix/lib" \
+            --enable-shared --disable-static)
+        make -C "$sdl_ttf_build" -j"$JOBS"
+        make -C "$sdl_ttf_build" install
+    else
+        note "Dùng lại SDL_ttf đã build xong"
+    fi
     printf '%s\n' "$packaging_commit" > "$sdl_marker"
 fi
 

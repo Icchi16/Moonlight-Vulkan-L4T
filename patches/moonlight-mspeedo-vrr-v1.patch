@@ -1,10 +1,8 @@
 From: mspeedo VRR port for Moonlight nightly
-Subject: [PATCH] Apply low-latency Vulkan tuning for VRR and fixed-refresh clients
+Subject: [PATCH] Apply low-latency Vulkan tuning for VRR clients
 
 Port of mspeedo/moonlight-qt commit
 180f234dcae109afda1124346958a6eac16ab214 to current Moonlight nightly.
-The queued-present wait is retained for FIFO so fixed-refresh L4T displays
-wait before selecting a frame instead of blocking later in renderFrame().
 
 diff --git a/app/streaming/video/ffmpeg-renderers/plvk.cpp b/app/streaming/video/ffmpeg-renderers/plvk.cpp
 --- a/app/streaming/video/ffmpeg-renderers/plvk.cpp
@@ -19,19 +17,10 @@ diff --git a/app/streaming/video/ffmpeg-renderers/plvk.cpp b/app/streaming/video
 +    if (!createSwapchain(swapchainDepth)) {
          return false;
      }
-@@ -905,5 +908,11 @@ void PlVkRenderer::waitToRender()
-     //
-     // NB: This seems to cause performance problems with the Windows display stack
-     // (particularly on Nvidia) so we will only do this for non-Windows platforms.
--    pl_swapchain_swap_buffers(m_Swapchain);
-+    // Keep this wait for FIFO/V-Sync. Without it, FIFO blocks later inside
-+    // renderFrame() after the frame has already been selected, which raises
-+    // both the measured render time and actual latency on fixed-refresh L4T.
-+    // Non-FIFO present modes used for V-Sync-off/VRR remain non-blocking.
-+    if (m_VkPresentMode == VK_PRESENT_MODE_FIFO_KHR) {
-+        pl_swapchain_swap_buffers(m_Swapchain);
-+    }
- #endif
+@@ -900,2 +903,2 @@ void PlVkRenderer::waitToRender()
+-#ifndef Q_OS_WIN32
++#if 0 // mspeedo VRR: avoid the Linux-only queued-present wait
+     // With libplacebo's Vulkan backend, all swap_buffers does is wait for queued
 diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
 --- a/app/streaming/video/ffmpeg.cpp
 +++ b/app/streaming/video/ffmpeg.cpp

@@ -91,6 +91,11 @@ Với màn hình trong của Switch, nên test trước với V-Sync bật. Có 
 để đo latency thấp hơn, nhưng chế độ này có thể gây tearing vì màn hình không
 phải VRR.
 
+Port L4T giữ bước chờ queued-present của upstream khi Vulkan dùng FIFO/V-Sync.
+Việc chờ diễn ra trước khi Moonlight chọn frame mới nhất, thay vì chặn bên trong
+`renderFrame()` sau khi frame đã được chọn. Với V-Sync tắt và present mode
+Immediate/Mailbox/FIFO-relaxed, tuning VRR của mspeedo vẫn được giữ nguyên.
+
 Trên Switch-L4T, script luôn dùng FFmpeg 6.1.1 NVV4L2 của Switchroot
 (`h264_nvv4l2`/`hevc_nvv4l2`) để giữ hardware decoding trên Tegra, và
 build libplacebo Vulkan vào prefix nội bộ trong `build/deps`. SDL2/SDL_ttf
@@ -119,7 +124,7 @@ Các biến hữu ích:
 - `JOBS=4`: giới hạn luồng compile (nên dùng 4 trên Switch).
 - `CLEAN=1`: xóa build tree của target trước khi build.
 - `EMBEDDED=1`: thêm `CONFIG+=embedded` cho L4T.
-- `MSPEEDO_PATCH=0`: build L4T không có latency patch để so sánh A/B.
+- `MSPEEDO_PATCH=0`: build L4T không có latency patch FIFO-safe để so sánh A/B.
 - `MOONLIGHT_REPO=URL`: dùng fork khác, nếu cần.
 
 ## Kiểm tra renderer khi chạy

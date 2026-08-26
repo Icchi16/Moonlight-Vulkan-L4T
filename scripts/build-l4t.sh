@@ -175,6 +175,7 @@ export QMAKE_RPATHDIR="$deps_prefix/lib $deps_prefix/lib/aarch64-linux-gnu"
 # Gỡ bản patch của lần build trước trước khi checkout nightly mới. Chỉ đụng đến
 # hai file do patch mspeedo quản lý; thay đổi lạ trong source cache sẽ dừng build.
 latency_patch="$ROOT_DIR/patches/moonlight-mspeedo-vrr.patch"
+legacy_latency_patch="$ROOT_DIR/patches/moonlight-mspeedo-vrr-v1.patch"
 cached_source="$BUILD_DIR/moonlight-qt"
 if [[ -d "$cached_source/.git" ]] && \
         ! git -C "$cached_source" diff --quiet -- \
@@ -182,6 +183,9 @@ if [[ -d "$cached_source/.git" ]] && \
             app/streaming/video/ffmpeg-renderers/plvk.cpp; then
     if git -C "$cached_source" apply --reverse --check "$latency_patch"; then
         git -C "$cached_source" apply --reverse "$latency_patch"
+    elif git -C "$cached_source" apply --reverse --check "$legacy_latency_patch"; then
+        note "Gỡ phiên bản cũ của patch mspeedo khỏi source cache"
+        git -C "$cached_source" apply --reverse "$legacy_latency_patch"
     else
         die "Source cache có thay đổi không thuộc patch mspeedo. Hãy kiểm tra $cached_source."
     fi
@@ -194,7 +198,7 @@ if [[ ${MSPEEDO_PATCH:-1} == 1 ]]; then
     if git -C "$source_dir" apply --check "$latency_patch"; then
         note "Áp dụng mspeedo low-latency Vulkan patch cho L4T"
         git -C "$source_dir" apply "$latency_patch"
-        latency_patch_state="mspeedo-180f234-port"
+        latency_patch_state="mspeedo-180f234-fifo-safe-port"
     elif git -C "$source_dir" apply --reverse --check "$latency_patch"; then
         note "Nightly đã chứa thay đổi tương đương patch mspeedo"
         latency_patch_state="already-in-upstream"

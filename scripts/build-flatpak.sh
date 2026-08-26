@@ -9,9 +9,9 @@ need python3
 if command -v flatpak-builder >/dev/null 2>&1; then
     flatpak_builder=(flatpak-builder)
 elif flatpak info --user org.flatpak.Builder >/dev/null 2>&1; then
-    # Bazzite/immutable OS: dùng flatpak-builder đóng gói trong org.flatpak.Builder.
-    flatpak_builder=(flatpak run --filesystem="$ROOT_DIR" \
-        --filesystem=xdg-data/flatpak --command=flatpak-builder org.flatpak.Builder)
+    # Bazzite/immutable OS: gọi entrypoint mặc định để wrapper của app trỏ
+    # flatpak-builder về user installation/remote của host.
+    flatpak_builder=(flatpak run org.flatpak.Builder)
 else
     die "Thiếu flatpak-builder. Trên Bazzite, cài org.flatpak.Builder từ Flathub."
 fi

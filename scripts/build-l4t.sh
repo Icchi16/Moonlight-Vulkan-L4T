@@ -150,8 +150,39 @@ fi
 
 export QMAKE_RPATHDIR="$deps_prefix/lib $deps_prefix/lib/aarch64-linux-gnu"
 
+# Gỡ bản patch của lần build trước trước khi checkout nightly mới. Chỉ đụng đến
+# hai file do patch mspeedo quản lý; thay đổi lạ trong source cache sẽ dừng build.
+latency_patch="$ROOT_DIR/patches/moonlight-mspeedo-vrr.patch"
+cached_source="$BUILD_DIR/moonlight-qt"
+if [[ -d "$cached_source/.git" ]] && \
+        ! git -C "$cached_source" diff --quiet -- \
+            app/streaming/video/ffmpeg.cpp \
+            app/streaming/video/ffmpeg-renderers/plvk.cpp; then
+    if git -C "$cached_source" apply --reverse --check "$latency_patch"; then
+        git -C "$cached_source" apply --reverse "$latency_patch"
+    else
+        die "Source cache có thay đổi không thuộc patch mspeedo. Hãy kiểm tra $cached_source."
+    fi
+fi
+
 prepare_source
 source_dir="$SOURCE_DIR"
+
+if [[ ${MSPEEDO_PATCH:-1} == 1 ]]; then
+    if git -C "$source_dir" apply --check "$latency_patch"; then
+        note "Áp dụng mspeedo low-latency Vulkan patch cho L4T"
+        git -C "$source_dir" apply "$latency_patch"
+        latency_patch_state="mspeedo-180f234-port"
+    elif git -C "$source_dir" apply --reverse --check "$latency_patch"; then
+        note "Nightly đã chứa thay đổi tương đương patch mspeedo"
+        latency_patch_state="already-in-upstream"
+    else
+        die "Patch mspeedo không còn tương thích với Moonlight $MOONLIGHT_SHA."
+    fi
+else
+    latency_patch_state="disabled-by-MSPEEDO_PATCH=0"
+fi
+
 moonlight_build="$BUILD_DIR/l4t"
 [[ ${CLEAN:-0} == 1 ]] && rm -rf -- "$moonlight_build"
 mkdir -p "$moonlight_build"
@@ -195,8 +226,10 @@ fi
 exec "$moonlight_binary" "\$@"
 EOF
 chmod +x "$DIST_DIR/moonlight-vulkan"
-write_build_info l4t-aarch64
+write_build_info l4t-aarch64-mspeedo
 {
+    printf 'latency_patch=%s\n' "$latency_patch_state"
+    printf 'decoder_policy=NVV4L2; VAAPI/VDPAU disabled\n'
     printf 'ffmpeg_l4t_commit=%s\n' "$ffmpeg_l4t_commit"
     printf 'libplacebo_commit=%s\n' "$libplacebo_commit"
     printf 'moonlight_packaging_commit=%s\n' "$packaging_commit"

@@ -35,6 +35,7 @@ prepare_source() {
 
 write_build_info() {
     local target="$1"
+    local output="${2:-$DIST_DIR/build-info.txt}"
     {
         printf 'target=%s\n' "$target"
         printf 'repository=%s\n' "$MOONLIGHT_REPO"
@@ -42,5 +43,5 @@ write_build_info() {
         printf 'commit=%s\n' "$MOONLIGHT_SHA"
         printf 'built_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf 'renderer=PREFER_VULKAN=1 (libplacebo)\n'
-    } > "$DIST_DIR/build-info.txt"
+    } > "$output"
 }

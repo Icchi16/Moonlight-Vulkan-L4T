@@ -1,0 +1,42 @@
+From: mspeedo VRR port for Moonlight nightly
+Subject: [PATCH] Apply low-latency Vulkan tuning for VRR clients
+
+Port of mspeedo/moonlight-qt commit
+180f234dcae109afda1124346958a6eac16ab214 to current Moonlight nightly.
+
+diff --git a/app/streaming/video/ffmpeg-renderers/plvk.cpp b/app/streaming/video/ffmpeg-renderers/plvk.cpp
+--- a/app/streaming/video/ffmpeg-renderers/plvk.cpp
++++ b/app/streaming/video/ffmpeg-renderers/plvk.cpp
+@@ -534,4 +534,7 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
+-    // Start with a swapchain that is double-buffered for lowest display latency
+-    if (!createSwapchain(1)) {
++    // Keep a single image in flight for V-Sync. With V-Sync disabled for VRR,
++    // allow one additional image so the GPU can pipeline without growing the
++    // queue beyond one frame of latency.
++    const int swapchainDepth = params->enableVsync ? 1 : 2;
++    if (!createSwapchain(swapchainDepth)) {
+         return false;
+     }
+@@ -900,2 +903,2 @@ void PlVkRenderer::waitToRender()
+-#ifndef Q_OS_WIN32
++#if 0 // mspeedo VRR: avoid the Linux-only queued-present wait
+     // With libplacebo's Vulkan backend, all swap_buffers does is wait for queued
+diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
+--- a/app/streaming/video/ffmpeg.cpp
++++ b/app/streaming/video/ffmpeg.cpp
+@@ -4,5 +4,7 @@
+ #include "streaming/session.h"
+-
++
+ #include <h264_stream.h>
+-
++
++#include <thread>
++
+ extern "C" {
+@@ -2054,4 +2056,4 @@ void FFmpegVideoDecoder::decoderThreadProc()
+                     else {
+                         // No output data or input data. Let's wait a little bit.
+-                        SDL_Delay(2);
++                        std::this_thread::yield();
+                     }

@@ -1,10 +1,10 @@
-# Moonlight Qt nightly + Vulkan renderer
+# Moonlight Qt nightly + mspeedo Vulkan latency patch
 
 Bộ script này build `master` (nightly) của
 [moonlight-stream/moonlight-qt](https://github.com/moonlight-stream/moonlight-qt)
-và buộc Moonlight ưu tiên Vulkan renderer bằng `PREFER_VULKAN=1`.
-Không có fork renderer riêng: Vulkan/libplacebo đã nằm trong upstream, nhờ vậy
-có thể theo nightly mà chỉ duy trì lớp build/packaging nhỏ này.
+và buộc Moonlight ưu tiên Vulkan renderer bằng `PREFER_VULKAN=1`. Bản Flatpak
+mặc định còn áp dụng port của mspeedo commit `180f234` và đặt
+`LIBVA_DRIVER_NAME=invalid` để ưu tiên Vulkan Video thay vì VAAPI.
 
 > `PREFER_VULKAN=1` chỉ có tác dụng khi binary được compile với
 > libplacebo >= 7.349.0 và FFmpeg >= 6.1. Script sẽ dừng nếu qmake không
@@ -45,8 +45,10 @@ flatpak run com.moonlight_stream.Moonlight
 ```
 
 Script lấy manifest Flathub hiện tại (gồm FFmpeg và libplacebo đúng bản),
-thay source Moonlight bằng commit nightly mới nhất, và thêm
-`PREFER_VULKAN=1`. Đây là lối phù hợp với Bazzite immutable.
+thay source Moonlight bằng commit nightly mới nhất, thêm patch mspeedo,
+`PREFER_VULKAN=1` và policy Vulkan Video. Đây là lối phù hợp với Bazzite
+immutable. Bundle dùng app ID chính thức nên sẽ thay thế Moonlight trong cùng
+scope cài đặt.
 
 ### Fedora workstation (native)
 
@@ -112,10 +114,11 @@ Có thể tắt ép Vulkan tạm thời để so sánh:
 PREFER_VULKAN=0 ./build/moonlight-qt/app/moonlight
 ```
 
-Vulkan renderer không tự động đồng nghĩa với Vulkan Video decoding.
-Renderer có thể nhận frame từ VAAPI/NVDEC/V4L2; decoder thực tế phụ thuộc
-driver, FFmpeg và GPU. Hãy so sánh `Average decoding time`, `Average rendering
-time` và `Frames dropped by network` trước khi kết luận latency giảm.
+Bản Flatpak đặt `LIBVA_DRIVER_NAME=invalid` để VAAPI khởi tạo thất bại và
+Moonlight thử Vulkan Video. Nếu GPU/driver không hỗ trợ codec đang dùng,
+Moonlight vẫn có thể fallback sang software decoding. Hãy kiểm tra log và so
+sánh `Average decoding time`, `Average rendering time` cùng `Frames dropped by
+network` trước khi kết luận latency giảm.
 
 Trên Switchroot, log stream phải có decoder `h264_nvv4l2` hoặc
 `hevc_nvv4l2` và dòng `Using Vulkan renderer`. Nếu không có `nvv4l2`, không

@@ -40,6 +40,12 @@ export MOONLIGHT_SHA MOONLIGHT_REPO
 
 base_manifest="$manifest_repo/com.moonlight_stream.Moonlight.json"
 manifest="$manifest_repo/com.moonlight_stream.Moonlight.NightlyVulkan.json"
+builder_dir="$flatpak_work/build-dir"
+bundle="$DIST_DIR/moonlight-nightly-vulkan.flatpak"
+build_info="$DIST_DIR/build-info.txt"
+patch_name="moonlight-mspeedo-vrr.patch"
+cp "$ROOT_DIR/patches/$patch_name" "$manifest_repo/$patch_name"
+export patch_name
 cp "$base_manifest" "$manifest"
 
 # Chỉ thay source Moonlight và environment; dependencies/patch từ Flathub được giữ nguyên.
@@ -63,6 +69,16 @@ src.update({
     "commit": os.environ["MOONLIGHT_SHA"],
     "disable-shallow-clone": True,
 })
+# Match the successful one-off test without compiling VAAPI support out.
+# This leaves the decoder policy reversible with a per-run Flatpak override.
+args[:] = [a for a in args
+           if not a.startswith("--env=LIBVA_DRIVER_NAME=")
+           and a != "--unset-env=LIBVA_DRIVER_NAME"]
+args.append("--env=LIBVA_DRIVER_NAME=invalid")
+moonlight["sources"].append({
+    "type": "patch",
+    "path": os.environ["patch_name"],
+})
 with open(p, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -73,10 +89,14 @@ runtime_version="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); 
 sdk="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["sdk"])' "$manifest")"
 flatpak install --user -y flathub "$runtime//$runtime_version" "$sdk//$runtime_version"
 
-note "Build Flatpak Moonlight $MOONLIGHT_SHA + PREFER_VULKAN=1"
+note "Build Flatpak Moonlight $MOONLIGHT_SHA + mspeedo VRR + Vulkan Video"
 "${flatpak_builder[@]}" --user --force-clean --install-deps-from=flathub \
-    --repo="$flatpak_work/repo" "$flatpak_work/build-dir" "$manifest"
-flatpak build-bundle "$flatpak_work/repo" "$DIST_DIR/moonlight-nightly-vulkan.flatpak" \
+    --repo="$flatpak_work/repo" "$builder_dir" "$manifest"
+flatpak build-bundle "$flatpak_work/repo" "$bundle" \
     com.moonlight_stream.Moonlight
-write_build_info flatpak
-note "Xong: $DIST_DIR/moonlight-nightly-vulkan.flatpak"
+write_build_info flatpak-mspeedo "$build_info"
+{
+    printf 'latency_patch=mspeedo-180f234-port\n'
+    printf 'decoder_policy=LIBVA_DRIVER_NAME=invalid\n'
+} >> "$build_info"
+note "Xong: $bundle"

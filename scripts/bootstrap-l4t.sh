@@ -29,4 +29,3 @@ command -v update-desktop-database >/dev/null 2>&1 && \
 echo "Xong. Bản stable vẫn được giữ nguyên."
 echo "Mở 'Moonlight Nightly (Vulkan)' trong menu hoặc chạy:"
 echo "$HOME/.local/bin/moonlight-nightly-vulkan"
-

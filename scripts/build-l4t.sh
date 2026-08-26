@@ -235,4 +235,3 @@ write_build_info l4t-aarch64-mspeedo
     printf 'moonlight_packaging_commit=%s\n' "$packaging_commit"
 } >> "$DIST_DIR/build-info.txt"
 note "Xong: $DIST_DIR/moonlight-vulkan"
-

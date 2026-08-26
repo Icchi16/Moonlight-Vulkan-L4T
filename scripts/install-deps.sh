@@ -45,4 +45,3 @@ case "${ID:-}" in
         exit 2
         ;;
 esac
-

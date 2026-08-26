@@ -140,4 +140,3 @@ libplacebo Vulkan chỉ đảm nhiệm render. Hãy so sánh `Average decoding t
 Trên Switchroot, log stream phải có decoder `h264_nvv4l2` hoặc
 `hevc_nvv4l2` và dòng `Vulkan rendering device chosen`. Nếu không có
 `nvv4l2`, không nên benchmark latency vì Moonlight có thể đang decode bằng CPU.
-

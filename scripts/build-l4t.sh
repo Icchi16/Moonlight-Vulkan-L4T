@@ -134,9 +134,11 @@ if [[ ! -f "$ffmpeg_marker" ]] || [[ $(<"$ffmpeg_marker") != "$ffmpeg_l4t_commit
         --enable-nvv4l2 \
         --enable-decoder=h264_nvv4l2 \
         --enable-decoder=hevc_nvv4l2)
-    grep -q '#define CONFIG_H264_NVV4L2_DECODER 1' "$ff_build/config.h" || \
+    ffmpeg_components="$ff_build/config_components.h"
+    [[ -f "$ffmpeg_components" ]] || ffmpeg_components="$ff_build/config.h"
+    grep -q '#define CONFIG_H264_NVV4L2_DECODER 1' "$ffmpeg_components" || \
         die "FFmpeg configure không enable h264_nvv4l2. Kiểm tra libv4l-dev và Switchroot BSP."
-    grep -q '#define CONFIG_HEVC_NVV4L2_DECODER 1' "$ff_build/config.h" || \
+    grep -q '#define CONFIG_HEVC_NVV4L2_DECODER 1' "$ffmpeg_components" || \
         die "FFmpeg configure không enable hevc_nvv4l2."
     make -C "$ff_build" -j"$JOBS"
     make -C "$ff_build" install

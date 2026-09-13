@@ -1,11 +1,14 @@
-# Moonlight Qt nightly + mspeedo Vulkan latency patch
+# Moonlight Qt nightly + FSR1 + mspeedo Vulkan latency patch
 
-Bộ script này build `master` (nightly) của
+Bộ script này build `master` (nightly) mới nhất của
 [moonlight-stream/moonlight-qt](https://github.com/moonlight-stream/moonlight-qt)
 và buộc Moonlight ưu tiên Vulkan renderer bằng `PREFER_VULKAN=1`. Bản Flatpak
-và Switchroot mặc định áp dụng port của
+áp dụng thêm FSR1 cho Vulkan/libplacebo. Bản Flatpak và Switchroot mặc định áp dụng port của
 [mspeedo commit `180f234`](https://github.com/mspeedo/moonlight-qt/commit/180f234dcae109afda1124346958a6eac16ab214)
 để giảm hàng đợi render/present trên Vulkan.
+
+FSR1 chỉ được áp dụng trong `build-flatpak.sh`; build native và Switchroot/L4T
+không thay đổi.
 
 > `PREFER_VULKAN=1` chỉ có tác dụng khi binary được compile với
 > libplacebo >= 7.349.0 và FFmpeg >= 6.1. Script sẽ dừng nếu qmake không
@@ -46,10 +49,14 @@ flatpak run com.moonlight_stream.Moonlight
 ```
 
 Script lấy manifest Flathub hiện tại (gồm FFmpeg và libplacebo đúng bản),
-thay source Moonlight bằng commit nightly mới nhất, thêm patch mspeedo,
+thay source Moonlight bằng commit upstream mới nhất, thêm patch FSR1 Linux và patch mspeedo,
 `PREFER_VULKAN=1` và `LIBVA_DRIVER_NAME=invalid` để ưu tiên Vulkan Video thay
 vì VAAPI. Đây là lối phù hợp với Bazzite immutable. Bundle dùng app ID chính
 thức nên sẽ thay thế Moonlight trong cùng scope cài đặt.
+
+Sau khi cài, mở **Settings > Video Settings** và bật **FSR1 upscaling**.
+FSR1 chỉ chạy khi độ phân giải stream thấp hơn độ phân giải hiển thị. Khi bắt
+đầu stream, log sẽ có dòng `FSR1 upscaling enabled` nếu shader được nạp thành công.
 
 ### Fedora workstation (native)
 

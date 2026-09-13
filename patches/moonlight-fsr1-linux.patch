@@ -1,0 +1,1312 @@
+From: Moonlight Vulkan Flatpak FSR1 port
+Subject: [PATCH] Add FSR1 upscaling to the Linux libplacebo renderer
+
+Adapted from linckosz/moonlight-qt commit
+fddd6b8e8b3a3883b81116785932468f757189ff. This port keeps only the Linux
+Vulkan/libplacebo implementation and applies it to current upstream Moonlight.
+
+diff --git a/app/gui/SettingsView.qml b/app/gui/SettingsView.qml
+index c119d15..19854b0 100644
+--- a/app/gui/SettingsView.qml
++++ b/app/gui/SettingsView.qml
+@@ -871,6 +871,23 @@ Flickable {
+                                     :
+                                       qsTr("HDR streaming is not supported on this PC.")
+                 }
++
++                CheckBox {
++                    id: fsr1Upscaling
++                    width: parent.width
++                    hoverEnabled: true
++                    text: qsTr("FSR1 upscaling")
++                    font.pointSize: 12
++                    checked: StreamingPreferences.fsr1Upscaling
++                    onCheckedChanged: {
++                        StreamingPreferences.fsr1Upscaling = checked
++                    }
++
++                    ToolTip.delay: 1000
++                    ToolTip.timeout: 5000
++                    ToolTip.visible: hovered
++                    ToolTip.text: qsTr("Improves image clarity when the stream resolution is lower than the display resolution. Requires the Vulkan renderer.")
++                }
+             }
+         }
+ 
+diff --git a/app/resources.qrc b/app/resources.qrc
+index 04b71ed..b1b09d5 100644
+--- a/app/resources.qrc
++++ b/app/resources.qrc
+@@ -93,4 +93,8 @@
+         <file alias="d3d11_y410_pixel.fxc">shaders/d3d11_y410_pixel.fxc</file>
+         <file alias="vt_renderer.metal">shaders/vt_renderer.metal</file>
+     </qresource>
++    <qresource prefix="/enhancer">
++        <file alias="FSR1.glsl">shaders/enhancer/AMD/FSR1.glsl</file>
++        <file alias="FSR1_HDR.glsl">shaders/enhancer/AMD/FSR1_HDR.glsl</file>
++    </qresource>
+ </RCC>
+diff --git a/app/settings/streamingpreferences.cpp b/app/settings/streamingpreferences.cpp
+index 0c2a6c9..e2c7db0 100644
+--- a/app/settings/streamingpreferences.cpp
++++ b/app/settings/streamingpreferences.cpp
+@@ -34,6 +34,7 @@
+ #define SER_ABSTOUCHMODE "abstouchmode"
+ #define SER_STARTWINDOWED "startwindowed"
+ #define SER_FRAMEPACING "framepacing"
++#define SER_FSR1UPSCALING "fsr1upscaling"
+ #define SER_CONNWARNINGS "connwarnings"
+ #define SER_CONFWARNINGS "confwarnings"
+ #define SER_UIDISPLAYMODE "uidisplaymode"
+@@ -138,6 +139,7 @@ void StreamingPreferences::reload()
+     absoluteMouseMode = settings.value(SER_ABSMOUSEMODE, false).toBool();
+     absoluteTouchMode = settings.value(SER_ABSTOUCHMODE, true).toBool();
+     framePacing = settings.value(SER_FRAMEPACING, false).toBool();
++    fsr1Upscaling = settings.value(SER_FSR1UPSCALING, false).toBool();
+     connectionWarnings = settings.value(SER_CONNWARNINGS, true).toBool();
+     configurationWarnings = settings.value(SER_CONFWARNINGS, true).toBool();
+     richPresence = settings.value(SER_RICHPRESENCE, true).toBool();
+@@ -338,6 +340,7 @@ void StreamingPreferences::save()
+     settings.setValue(SER_ABSMOUSEMODE, absoluteMouseMode);
+     settings.setValue(SER_ABSTOUCHMODE, absoluteTouchMode);
+     settings.setValue(SER_FRAMEPACING, framePacing);
++    settings.setValue(SER_FSR1UPSCALING, fsr1Upscaling);
+     settings.setValue(SER_CONNWARNINGS, connectionWarnings);
+     settings.setValue(SER_CONFWARNINGS, configurationWarnings);
+     settings.setValue(SER_RICHPRESENCE, richPresence);
+diff --git a/app/settings/streamingpreferences.h b/app/settings/streamingpreferences.h
+index ad611f6..f6a539f 100644
+--- a/app/settings/streamingpreferences.h
++++ b/app/settings/streamingpreferences.h
+@@ -134,6 +134,7 @@ public:
+     Q_PROPERTY(bool absoluteMouseMode MEMBER absoluteMouseMode NOTIFY absoluteMouseModeChanged)
+     Q_PROPERTY(bool absoluteTouchMode MEMBER absoluteTouchMode NOTIFY absoluteTouchModeChanged)
+     Q_PROPERTY(bool framePacing MEMBER framePacing NOTIFY framePacingChanged)
++    Q_PROPERTY(bool fsr1Upscaling MEMBER fsr1Upscaling NOTIFY fsr1UpscalingChanged)
+     Q_PROPERTY(bool connectionWarnings MEMBER connectionWarnings NOTIFY connectionWarningsChanged)
+     Q_PROPERTY(bool configurationWarnings MEMBER configurationWarnings NOTIFY configurationWarningsChanged)
+     Q_PROPERTY(bool richPresence MEMBER richPresence NOTIFY richPresenceChanged)
+@@ -176,6 +177,7 @@ public:
+     bool absoluteMouseMode;
+     bool absoluteTouchMode;
+     bool framePacing;
++    bool fsr1Upscaling;
+     bool connectionWarnings;
+     bool configurationWarnings;
+     bool richPresence;
+@@ -223,6 +225,7 @@ signals:
+     void uiDisplayModeChanged();
+     void windowModeChanged();
+     void framePacingChanged();
++    void fsr1UpscalingChanged();
+     void connectionWarningsChanged();
+     void configurationWarningsChanged();
+     void richPresenceChanged();
+@@ -246,4 +249,3 @@ private:
+ 
+     QQmlEngine* m_QmlEngine;
+ };
+-
+diff --git a/app/shaders/enhancer/AMD/FSR1.glsl b/app/shaders/enhancer/AMD/FSR1.glsl
+new file mode 100644
+index 0000000..0f3db1c
+--- /dev/null
++++ b/app/shaders/enhancer/AMD/FSR1.glsl
+@@ -0,0 +1,457 @@
++// Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
++//
++// Permission is hereby granted, free of charge, to any person obtaining a copy
++// of this software and associated documentation files (the "Software"), to deal
++// in the Software without restriction, including without limitation the rights
++// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++// copies of the Software, and to permit persons to whom the Software is
++// furnished to do so, subject to the following conditions:
++//
++// The above copyright notice and this permission notice shall be included in
++// all copies or substantial portions of the Software.
++//
++// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
++// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++// THE SOFTWARE.
++
++// FidelityFX FSR v1.0.2 by AMD
++// ported to mpv by agyild
++// https://gist.github.com/agyild
++
++// Changelog
++// Made it compatible with pre-OpenGL 4.0 renderers
++// Made it directly operate on LUMA plane, since the original shader was operating on LUMA by deriving it from RGB. This should cause a major increase in performance, especially on OpenGL 4.0+ renderers (4+2 texture lookups vs. 12+5)
++// Removed transparency preservation mechanism since the alpha channel is a separate source plane than LUMA
++// Added optional performance-saving lossy optimizations to EASU (Credit: atyuwen, https://atyuwen.github.io/posts/optimizing-fsr/)
++//
++// Notes
++// Per AMD's guidelines only upscales content up to 4x (e.g., 1080p -> 2160p, 720p -> 1440p etc.) and everything else in between,
++// that means FSR will scale up to 4x at maximum, and any further scaling will be processed by mpv's scalers
++
++//!HOOK LUMA
++//!BIND HOOKED
++//!SAVE EASUTEX
++//!DESC FidelityFX Super Resolution v1.0.2 (EASU)
++//!WHEN OUTPUT.w OUTPUT.h * LUMA.w LUMA.h * / 1.0 >
++//!WIDTH OUTPUT.w OUTPUT.w LUMA.w 2 * < * LUMA.w 2 * OUTPUT.w LUMA.w 2 * > * + OUTPUT.w OUTPUT.w LUMA.w 2 * = * +
++//!HEIGHT OUTPUT.h OUTPUT.h LUMA.h 2 * < * LUMA.h 2 * OUTPUT.h LUMA.h 2 * > * + OUTPUT.h OUTPUT.h LUMA.h 2 * = * +
++//!COMPONENTS 1
++
++// User variables - EASU
++#define FSR_PQ 0 // Whether the source content has PQ gamma or not. Needs to be set to the same value for both passes. 0 or 1.
++#define FSR_EASU_DERING 1 // If set to 0, disables deringing for a small increase in performance. 0 or 1.
++#define FSR_EASU_SIMPLE_ANALYSIS 0 // If set to 1, uses a simpler single-pass direction and length analysis for an increase in performance. 0 or 1.
++#define FSR_EASU_QUIT_EARLY 0 // If set to 1, uses bilinear filtering for non-edge pixels and skips EASU on those regions for an increase in performance. 0 or 1.
++
++// Shader code
++
++#ifndef FSR_EASU_DIR_THRESHOLD
++	#if (FSR_EASU_QUIT_EARLY == 1)
++		#define FSR_EASU_DIR_THRESHOLD 64.0
++	#elif (FSR_EASU_QUIT_EARLY == 0)
++		#define FSR_EASU_DIR_THRESHOLD 32768.0
++	#endif
++#endif
++
++float APrxLoRcpF1(float a) {
++	return uintBitsToFloat(uint(0x7ef07ebb) - floatBitsToUint(a));
++}
++
++float APrxLoRsqF1(float a) {
++	return uintBitsToFloat(uint(0x5f347d74) - (floatBitsToUint(a) >> uint(1)));
++}
++
++float AMin3F1(float x, float y, float z) {
++	return min(x, min(y, z));
++}
++
++float AMax3F1(float x, float y, float z) {
++	return max(x, max(y, z));
++}
++
++#if (FSR_PQ == 1)
++
++float ToGamma2(float a) {
++	return pow(a, 4.0);
++}
++
++#endif
++
++ // Filtering for a given tap for the scalar.
++ void FsrEasuTap(
++	inout float aC,	// Accumulated color, with negative lobe.
++	inout float aW, // Accumulated weight.
++	vec2 off,       // Pixel offset from resolve position to tap.
++	vec2 dir,       // Gradient direction.
++	vec2 len,       // Length.
++	float lob,      // Negative lobe strength.
++	float clp,		// Clipping point.
++	float c){		// Tap color.
++	// Rotate offset by direction.
++	vec2 v;
++	v.x = (off.x * ( dir.x)) + (off.y * dir.y);
++	v.y = (off.x * (-dir.y)) + (off.y * dir.x);
++	// Anisotropy.
++	v *= len;
++	// Compute distance^2.
++	float d2 = v.x * v.x + v.y * v.y;
++	// Limit to the window as at corner, 2 taps can easily be outside.
++	d2 = min(d2, clp);
++	// Approximation of lancos2 without sin() or rcp(), or sqrt() to get x.
++	//  (25/16 * (2/5 * x^2 - 1)^2 - (25/16 - 1)) * (1/4 * x^2 - 1)^2
++	//  |_______________________________________|   |_______________|
++	//                   base                             window
++	// The general form of the 'base' is,
++	//  (a*(b*x^2-1)^2-(a-1))
++	// Where 'a=1/(2*b-b^2)' and 'b' moves around the negative lobe.
++	float wB = float(2.0 / 5.0) * d2 + -1.0;
++	float wA = lob * d2 + -1.0;
++	wB *= wB;
++	wA *= wA;
++	wB = float(25.0 / 16.0) * wB + float(-(25.0 / 16.0 - 1.0));
++	float w = wB * wA;
++	// Do weighted average.
++	aC += c * w;
++	aW += w;
++}
++
++// Accumulate direction and length.
++void FsrEasuSet(
++	inout vec2 dir,
++	inout float len,
++	vec2 pp,
++#if (FSR_EASU_SIMPLE_ANALYSIS == 1)
++	float b, float c,
++	float i, float j, float f, float e,
++	float k, float l, float h, float g,
++	float o, float n
++#elif (FSR_EASU_SIMPLE_ANALYSIS == 0)
++	bool biS, bool biT, bool biU, bool biV,
++	float lA, float lB, float lC, float lD, float lE
++#endif
++	){
++	// Compute bilinear weight, branches factor out as predicates are compiler time immediates.
++	//  s t
++	//  u v
++#if (FSR_EASU_SIMPLE_ANALYSIS == 1)
++	vec4 w = vec4(0.0);
++	w.x = (1.0 - pp.x) * (1.0 - pp.y);
++	w.y =        pp.x  * (1.0 - pp.y);
++	w.z = (1.0 - pp.x) *        pp.y;
++	w.w =        pp.x  *        pp.y;
++
++	float lA = dot(w, vec4(b, c, f, g));
++	float lB = dot(w, vec4(e, f, i, j));
++	float lC = dot(w, vec4(f, g, j, k));
++	float lD = dot(w, vec4(g, h, k, l));
++	float lE = dot(w, vec4(j, k, n, o));
++#elif (FSR_EASU_SIMPLE_ANALYSIS == 0)
++	float w = 0.0;
++	if (biS)
++		w = (1.0 - pp.x) * (1.0 - pp.y);
++	if (biT)
++		w =        pp.x  * (1.0 - pp.y);
++	if (biU)
++		w = (1.0 - pp.x) *        pp.y;
++	if (biV)
++		w =        pp.x  *        pp.y;
++#endif
++	// Direction is the '+' diff.
++	//    a
++	//  b c d
++	//    e
++	// Then takes magnitude from abs average of both sides of 'c'.
++	// Length converts gradient reversal to 0, smoothly to non-reversal at 1, shaped, then adding horz and vert terms.
++	float dc = lD - lC;
++	float cb = lC - lB;
++	float lenX = max(abs(dc), abs(cb));
++	lenX = APrxLoRcpF1(lenX);
++	float dirX = lD - lB;
++	lenX = clamp(abs(dirX) * lenX, 0.0, 1.0);
++	lenX *= lenX;
++	// Repeat for the y axis.
++	float ec = lE - lC;
++	float ca = lC - lA;
++	float lenY = max(abs(ec), abs(ca));
++	lenY = APrxLoRcpF1(lenY);
++	float dirY = lE - lA;
++	lenY = clamp(abs(dirY) * lenY, 0.0, 1.0);
++	lenY *= lenY;
++#if (FSR_EASU_SIMPLE_ANALYSIS == 1)
++	len = lenX + lenY;
++	dir = vec2(dirX, dirY);
++#elif (FSR_EASU_SIMPLE_ANALYSIS == 0)
++	dir += vec2(dirX, dirY) * w;
++	len += dot(vec2(w), vec2(lenX, lenY));
++#endif
++}
++
++vec4 hook() {
++	// Result
++	vec4 pix = vec4(0.0, 0.0, 0.0, 1.0);
++
++	//------------------------------------------------------------------------------------------------------------------------------
++	//      +---+---+
++	//      |   |   |
++	//      +--(0)--+
++	//      | b | c |
++	//  +---F---+---+---+
++	//  | e | f | g | h |
++	//  +--(1)--+--(2)--+
++	//  | i | j | k | l |
++	//  +---+---+---+---+
++	//      | n | o |
++	//      +--(3)--+
++	//      |   |   |
++	//      +---+---+
++	// Get position of 'F'.
++	vec2 pp = HOOKED_pos * HOOKED_size - vec2(0.5);
++	vec2 fp = floor(pp);
++	pp -= fp;
++	//------------------------------------------------------------------------------------------------------------------------------
++	// 12-tap kernel.
++	//    b c
++	//  e f g h
++	//  i j k l
++	//    n o
++	// Gather 4 ordering.
++	//  a b
++	//  r g
++	// Allowing dead-code removal to remove the 'z's.
++#if (defined(HOOKED_gather) && (__VERSION__ >= 400 || (GL_ES && __VERSION__ >= 310)))
++	vec4 bczzL = HOOKED_gather(vec2((fp + vec2(1.0, -1.0)) * HOOKED_pt), 0);
++	vec4 ijfeL = HOOKED_gather(vec2((fp + vec2(0.0,  1.0)) * HOOKED_pt), 0);
++	vec4 klhgL = HOOKED_gather(vec2((fp + vec2(2.0,  1.0)) * HOOKED_pt), 0);
++	vec4 zzonL = HOOKED_gather(vec2((fp + vec2(1.0,  3.0)) * HOOKED_pt), 0);
++#else
++	// pre-OpenGL 4.0 compatibility
++	float b = HOOKED_tex(vec2((fp + vec2(0.5, -0.5)) * HOOKED_pt)).r;
++	float c = HOOKED_tex(vec2((fp + vec2(1.5, -0.5)) * HOOKED_pt)).r;
++
++	float e = HOOKED_tex(vec2((fp + vec2(-0.5, 0.5)) * HOOKED_pt)).r;
++	float f = HOOKED_tex(vec2((fp + vec2( 0.5, 0.5)) * HOOKED_pt)).r;
++	float g = HOOKED_tex(vec2((fp + vec2( 1.5, 0.5)) * HOOKED_pt)).r;
++	float h = HOOKED_tex(vec2((fp + vec2( 2.5, 0.5)) * HOOKED_pt)).r;
++
++	float i = HOOKED_tex(vec2((fp + vec2(-0.5, 1.5)) * HOOKED_pt)).r;
++	float j = HOOKED_tex(vec2((fp + vec2( 0.5, 1.5)) * HOOKED_pt)).r;
++	float k = HOOKED_tex(vec2((fp + vec2( 1.5, 1.5)) * HOOKED_pt)).r;
++	float l = HOOKED_tex(vec2((fp + vec2( 2.5, 1.5)) * HOOKED_pt)).r;
++
++	float n = HOOKED_tex(vec2((fp + vec2(0.5, 2.5) ) * HOOKED_pt)).r;
++	float o = HOOKED_tex(vec2((fp + vec2(1.5, 2.5) ) * HOOKED_pt)).r;
++
++	vec4 bczzL = vec4(b, c, 0.0, 0.0);
++	vec4 ijfeL = vec4(i, j, f, e);
++	vec4 klhgL = vec4(k, l, h, g);
++	vec4 zzonL = vec4(0.0, 0.0, o, n);
++#endif
++	//------------------------------------------------------------------------------------------------------------------------------
++	// Rename.
++	float bL = bczzL.x;
++	float cL = bczzL.y;
++	float iL = ijfeL.x;
++	float jL = ijfeL.y;
++	float fL = ijfeL.z;
++	float eL = ijfeL.w;
++	float kL = klhgL.x;
++	float lL = klhgL.y;
++	float hL = klhgL.z;
++	float gL = klhgL.w;
++	float oL = zzonL.z;
++	float nL = zzonL.w;
++
++#if (FSR_PQ == 1)
++	// Not the most performance-friendly solution, but should work until mpv adds proper gamma transformation functions for shaders
++	bL = ToGamma2(bL);
++	cL = ToGamma2(cL);
++	iL = ToGamma2(iL);
++	jL = ToGamma2(jL);
++	fL = ToGamma2(fL);
++	eL = ToGamma2(eL);
++	kL = ToGamma2(kL);
++	lL = ToGamma2(lL);
++	hL = ToGamma2(hL);
++	gL = ToGamma2(gL);
++	oL = ToGamma2(oL);
++	nL = ToGamma2(nL);
++#endif
++
++	// Accumulate for bilinear interpolation.
++	vec2 dir = vec2(0.0);
++	float len = 0.0;
++#if (FSR_EASU_SIMPLE_ANALYSIS == 1)
++	FsrEasuSet(dir, len, pp, bL, cL, iL, jL, fL, eL, kL, lL, hL, gL, oL, nL);
++#elif (FSR_EASU_SIMPLE_ANALYSIS == 0)
++	FsrEasuSet(dir, len, pp, true, false, false, false, bL, eL, fL, gL, jL);
++	FsrEasuSet(dir, len, pp, false, true, false, false, cL, fL, gL, hL, kL);
++	FsrEasuSet(dir, len, pp, false, false, true, false, fL, iL, jL, kL, nL);
++	FsrEasuSet(dir, len, pp, false, false, false, true, gL, jL, kL, lL, oL);
++#endif
++	//------------------------------------------------------------------------------------------------------------------------------
++	// Normalize with approximation, and cleanup close to zero.
++	vec2 dir2 = dir * dir;
++	float dirR = dir2.x + dir2.y;
++	bool zro = dirR < float(1.0 / FSR_EASU_DIR_THRESHOLD);
++	dirR = APrxLoRsqF1(dirR);
++#if (FSR_EASU_QUIT_EARLY == 1)
++	if (zro) {
++		vec4 w = vec4(0.0);
++		w.x = (1.0 - pp.x) * (1.0 - pp.y);
++		w.y =        pp.x  * (1.0 - pp.y);
++		w.z = (1.0 - pp.x) *        pp.y;
++		w.w =        pp.x  *        pp.y;
++
++		pix.r = clamp(dot(w, vec4(fL, gL, jL, kL)), 0.0, 1.0);
++		return pix;
++	}
++#elif (FSR_EASU_QUIT_EARLY == 0)
++	dirR = zro ? 1.0 : dirR;
++	dir.x = zro ? 1.0 : dir.x;
++#endif
++	dir *= vec2(dirR);
++	// Transform from {0 to 2} to {0 to 1} range, and shape with square.
++	len = len * 0.5;
++	len *= len;
++	// Stretch kernel {1.0 vert|horz, to sqrt(2.0) on diagonal}.
++	float stretch = (dir.x * dir.x + dir.y * dir.y) * APrxLoRcpF1(max(abs(dir.x), abs(dir.y)));
++	// Anisotropic length after rotation,
++	//  x := 1.0 lerp to 'stretch' on edges
++	//  y := 1.0 lerp to 2x on edges
++	vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 + -0.5 * len);
++	// Based on the amount of 'edge',
++	// the window shifts from +/-{sqrt(2.0) to slightly beyond 2.0}.
++	float lob = 0.5 + float((1.0 / 4.0 - 0.04) - 0.5) * len;
++	// Set distance^2 clipping point to the end of the adjustable window.
++	float clp = APrxLoRcpF1(lob);
++	//------------------------------------------------------------------------------------------------------------------------------
++	// Accumulation
++	//    b c
++	//  e f g h
++	//  i j k l
++	//    n o
++	float aC = 0.0;
++	float aW = 0.0;
++	FsrEasuTap(aC, aW, vec2( 0.0,-1.0) - pp, dir, len2, lob, clp, bL); // b
++	FsrEasuTap(aC, aW, vec2( 1.0,-1.0) - pp, dir, len2, lob, clp, cL); // c
++	FsrEasuTap(aC, aW, vec2(-1.0, 1.0) - pp, dir, len2, lob, clp, iL); // i
++	FsrEasuTap(aC, aW, vec2( 0.0, 1.0) - pp, dir, len2, lob, clp, jL); // j
++	FsrEasuTap(aC, aW, vec2( 0.0, 0.0) - pp, dir, len2, lob, clp, fL); // f
++	FsrEasuTap(aC, aW, vec2(-1.0, 0.0) - pp, dir, len2, lob, clp, eL); // e
++	FsrEasuTap(aC, aW, vec2( 1.0, 1.0) - pp, dir, len2, lob, clp, kL); // k
++	FsrEasuTap(aC, aW, vec2( 2.0, 1.0) - pp, dir, len2, lob, clp, lL); // l
++	FsrEasuTap(aC, aW, vec2( 2.0, 0.0) - pp, dir, len2, lob, clp, hL); // h
++	FsrEasuTap(aC, aW, vec2( 1.0, 0.0) - pp, dir, len2, lob, clp, gL); // g
++	FsrEasuTap(aC, aW, vec2( 1.0, 2.0) - pp, dir, len2, lob, clp, oL); // o
++	FsrEasuTap(aC, aW, vec2( 0.0, 2.0) - pp, dir, len2, lob, clp, nL); // n
++	//------------------------------------------------------------------------------------------------------------------------------
++	// Normalize and dering.
++	pix.r = aC / aW;
++#if (FSR_EASU_DERING == 1)
++	float min1 = min(AMin3F1(fL, gL, jL), kL);
++	float max1 = max(AMax3F1(fL, gL, jL), kL);
++	pix.r = clamp(pix.r, min1, max1);
++#endif
++	pix.r = clamp(pix.r, 0.0, 1.0);
++
++	return pix;
++}
++
++//!HOOK LUMA
++//!BIND EASUTEX
++//!DESC FidelityFX Super Resolution v1.0.2 (RCAS)
++//!WIDTH EASUTEX.w
++//!HEIGHT EASUTEX.h
++//!COMPONENTS 1
++
++// User variables - RCAS
++// #define SHARPNESS 0.2 // Controls the amount of sharpening. The scale is {0.0 := maximum, to N>0, where N is the number of stops (halving) of the reduction of sharpness}. 0.0 to 2.0.
++#define FSR_RCAS_DENOISE 1 // If set to 1, lessens the sharpening on noisy areas. Can be disabled for better performance. 0 or 1.
++#define FSR_PQ 0 // Whether the source content has PQ gamma or not. Needs to be set to the same value for both passes. 0 or 1.
++
++// Custom
++#define SHARPNESS 0.75
++
++// Shader code
++
++#define FSR_RCAS_LIMIT (0.25 - (1.0 / 16.0)) // This is set at the limit of providing unnatural results for sharpening.
++
++float APrxMedRcpF1(float a) {
++	float b = uintBitsToFloat(uint(0x7ef19fff) - floatBitsToUint(a));
++	return b * (-b * a + 2.0);
++}
++
++float AMax3F1(float x, float y, float z) {
++	return max(x, max(y, z));
++}
++
++float AMin3F1(float x, float y, float z) {
++	return min(x, min(y, z));
++}
++
++#if (FSR_PQ == 1)
++
++float FromGamma2(float a) {
++	return sqrt(sqrt(a));
++}
++
++#endif
++
++vec4 hook() {
++	// Algorithm uses minimal 3x3 pixel neighborhood.
++	//    b
++	//  d e f
++	//    h
++#if (defined(EASUTEX_gather) && (__VERSION__ >= 400 || (GL_ES && __VERSION__ >= 310)))
++	vec3 bde = EASUTEX_gather(EASUTEX_pos + EASUTEX_pt * vec2(-0.5), 0).xyz;
++	float b = bde.z;
++	float d = bde.x;
++	float e = bde.y;
++
++	vec2 fh = EASUTEX_gather(EASUTEX_pos + EASUTEX_pt * vec2(0.5), 0).zx;
++	float f = fh.x;
++	float h = fh.y;
++#else
++	float b = EASUTEX_texOff(vec2( 0.0, -1.0)).r;
++	float d = EASUTEX_texOff(vec2(-1.0,  0.0)).r;
++	float e = EASUTEX_tex(EASUTEX_pos).r;
++	float f = EASUTEX_texOff(vec2(1.0, 0.0)).r;
++	float h = EASUTEX_texOff(vec2(0.0, 1.0)).r;
++#endif
++
++	// Min and max of ring.
++	float mn1L = min(AMin3F1(b, d, f), h);
++	float mx1L = max(AMax3F1(b, d, f), h);
++
++	// Immediate constants for peak range.
++	vec2 peakC = vec2(1.0, -1.0 * 4.0);
++
++	// Limiters, these need to be high precision RCPs.
++	float hitMinL = min(mn1L, e) / (4.0 * mx1L);
++	float hitMaxL = (peakC.x - max(mx1L, e)) / (4.0 * mn1L + peakC.y);
++	float lobeL = max(-hitMinL, hitMaxL);
++	float lobe = max(float(-FSR_RCAS_LIMIT), min(lobeL, 0.0)) * exp2(-clamp(float(SHARPNESS), 0.0, 2.0));
++
++	// Apply noise removal.
++#if (FSR_RCAS_DENOISE == 1)
++	// Noise detection.
++	float nz = 0.25 * b + 0.25 * d + 0.25 * f + 0.25 * h - e;
++	nz = clamp(abs(nz) * APrxMedRcpF1(AMax3F1(AMax3F1(b, d, e), f, h) - AMin3F1(AMin3F1(b, d, e), f, h)), 0.0, 1.0);
++	nz = -0.5 * nz + 1.0;
++	lobe *= nz;
++#endif
++
++	// Resolve, which needs the medium precision rcp approximation to avoid visible tonality changes.
++	float rcpL = APrxMedRcpF1(4.0 * lobe + 1.0);
++	vec4 pix = vec4(0.0, 0.0, 0.0, 1.0);
++	pix.r = float((lobe * b + lobe * d + lobe * h + lobe * f + e) * rcpL);
++#if (FSR_PQ == 1)
++	pix.r = FromGamma2(pix.r);
++#endif
++
++	return pix;
++}
+\ No newline at end of file
+diff --git a/app/shaders/enhancer/AMD/FSR1_HDR.glsl b/app/shaders/enhancer/AMD/FSR1_HDR.glsl
+new file mode 100644
+index 0000000..e7c842a
+--- /dev/null
++++ b/app/shaders/enhancer/AMD/FSR1_HDR.glsl
+@@ -0,0 +1,458 @@
++// Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
++//
++// Permission is hereby granted, free of charge, to any person obtaining a copy
++// of this software and associated documentation files (the "Software"), to deal
++// in the Software without restriction, including without limitation the rights
++// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++// copies of the Software, and to permit persons to whom the Software is
++// furnished to do so, subject to the following conditions:
++//
++// The above copyright notice and this permission notice shall be included in
++// all copies or substantial portions of the Software.
++//
++// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
++// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++// THE SOFTWARE.
++
++// FidelityFX FSR v1.0.2 by AMD
++// ported to mpv by agyild
++// https://gist.github.com/agyild
++
++// Changelog
++// Made it compatible with pre-OpenGL 4.0 renderers
++// Made it directly operate on LUMA plane, since the original shader was operating on LUMA by deriving it from RGB. This should cause a major increase in performance, especially on OpenGL 4.0+ renderers (4+2 texture lookups vs. 12+5)
++// Removed transparency preservation mechanism since the alpha channel is a separate source plane than LUMA
++// Added optional performance-saving lossy optimizations to EASU (Credit: atyuwen, https://atyuwen.github.io/posts/optimizing-fsr/)
++//
++// Notes
++// Per AMD's guidelines only upscales content up to 4x (e.g., 1080p -> 2160p, 720p -> 1440p etc.) and everything else in between,
++// that means FSR will scale up to 4x at maximum, and any further scaling will be processed by mpv's scalers
++
++//!HOOK LUMA
++//!BIND HOOKED
++//!SAVE EASUTEX
++//!DESC FidelityFX Super Resolution v1.0.2 (EASU)
++//!WHEN OUTPUT.w OUTPUT.h * LUMA.w LUMA.h * / 1.0 >
++//!WIDTH OUTPUT.w OUTPUT.w LUMA.w 2 * < * LUMA.w 2 * OUTPUT.w LUMA.w 2 * > * + OUTPUT.w OUTPUT.w LUMA.w 2 * = * +
++//!HEIGHT OUTPUT.h OUTPUT.h LUMA.h 2 * < * LUMA.h 2 * OUTPUT.h LUMA.h 2 * > * + OUTPUT.h OUTPUT.h LUMA.h 2 * = * +
++//!COMPONENTS 1
++
++// User variables - EASU
++#define FSR_PQ 1 // The source content uses PQ gamma. Keep this equal for both passes.
++#define FSR_EASU_DERING 1 // If set to 0, disables deringing for a small increase in performance. 0 or 1.
++#define FSR_EASU_SIMPLE_ANALYSIS 0 // If set to 1, uses a simpler single-pass direction and length analysis for an increase in performance. 0 or 1.
++#define FSR_EASU_QUIT_EARLY 0 // If set to 1, uses bilinear filtering for non-edge pixels and skips EASU on those regions for an increase in performance. 0 or 1.
++
++// Shader code
++
++#ifndef FSR_EASU_DIR_THRESHOLD
++	#if (FSR_EASU_QUIT_EARLY == 1)
++		#define FSR_EASU_DIR_THRESHOLD 64.0
++	#elif (FSR_EASU_QUIT_EARLY == 0)
++		#define FSR_EASU_DIR_THRESHOLD 32768.0
++	#endif
++#endif
++
++float APrxLoRcpF1(float a) {
++	return uintBitsToFloat(uint(0x7ef07ebb) - floatBitsToUint(a));
++}
++
++float APrxLoRsqF1(float a) {
++	return uintBitsToFloat(uint(0x5f347d74) - (floatBitsToUint(a) >> uint(1)));
++}
++
++float AMin3F1(float x, float y, float z) {
++	return min(x, min(y, z));
++}
++
++float AMax3F1(float x, float y, float z) {
++	return max(x, max(y, z));
++}
++
++#if (FSR_PQ == 1)
++
++float ToGamma2(float a) {
++	return pow(a, 4.0);
++}
++
++#endif
++
++ // Filtering for a given tap for the scalar.
++ void FsrEasuTap(
++	inout float aC,	// Accumulated color, with negative lobe.
++	inout float aW, // Accumulated weight.
++	vec2 off,       // Pixel offset from resolve position to tap.
++	vec2 dir,       // Gradient direction.
++	vec2 len,       // Length.
++	float lob,      // Negative lobe strength.
++	float clp,		// Clipping point.
++	float c){		// Tap color.
++	// Rotate offset by direction.
++	vec2 v;
++	v.x = (off.x * ( dir.x)) + (off.y * dir.y);
++	v.y = (off.x * (-dir.y)) + (off.y * dir.x);
++	// Anisotropy.
++	v *= len;
++	// Compute distance^2.
++	float d2 = v.x * v.x + v.y * v.y;
++	// Limit to the window as at corner, 2 taps can easily be outside.
++	d2 = min(d2, clp);
++	// Approximation of lancos2 without sin() or rcp(), or sqrt() to get x.
++	//  (25/16 * (2/5 * x^2 - 1)^2 - (25/16 - 1)) * (1/4 * x^2 - 1)^2
++	//  |_______________________________________|   |_______________|
++	//                   base                             window
++	// The general form of the 'base' is,
++	//  (a*(b*x^2-1)^2-(a-1))
++	// Where 'a=1/(2*b-b^2)' and 'b' moves around the negative lobe.
++	float wB = float(2.0 / 5.0) * d2 + -1.0;
++	float wA = lob * d2 + -1.0;
++	wB *= wB;
++	wA *= wA;
++	wB = float(25.0 / 16.0) * wB + float(-(25.0 / 16.0 - 1.0));
++	float w = wB * wA;
++	// Do weighted average.
++	aC += c * w;
++	aW += w;
++}
++
++// Accumulate direction and length.
++void FsrEasuSet(
++	inout vec2 dir,
++	inout float len,
++	vec2 pp,
++#if (FSR_EASU_SIMPLE_ANALYSIS == 1)
++	float b, float c,
++	float i, float j, float f, float e,
++	float k, float l, float h, float g,
++	float o, float n
++#elif (FSR_EASU_SIMPLE_ANALYSIS == 0)
++	bool biS, bool biT, bool biU, bool biV,
++	float lA, float lB, float lC, float lD, float lE
++#endif
++	){
++	// Compute bilinear weight, branches factor out as predicates are compiler time immediates.
++	//  s t
++	//  u v
++#if (FSR_EASU_SIMPLE_ANALYSIS == 1)
++	vec4 w = vec4(0.0);
++	w.x = (1.0 - pp.x) * (1.0 - pp.y);
++	w.y =        pp.x  * (1.0 - pp.y);
++	w.z = (1.0 - pp.x) *        pp.y;
++	w.w =        pp.x  *        pp.y;
++
++	float lA = dot(w, vec4(b, c, f, g));
++	float lB = dot(w, vec4(e, f, i, j));
++	float lC = dot(w, vec4(f, g, j, k));
++	float lD = dot(w, vec4(g, h, k, l));
++	float lE = dot(w, vec4(j, k, n, o));
++#elif (FSR_EASU_SIMPLE_ANALYSIS == 0)
++	float w = 0.0;
++	if (biS)
++		w = (1.0 - pp.x) * (1.0 - pp.y);
++	if (biT)
++		w =        pp.x  * (1.0 - pp.y);
++	if (biU)
++		w = (1.0 - pp.x) *        pp.y;
++	if (biV)
++		w =        pp.x  *        pp.y;
++#endif
++	// Direction is the '+' diff.
++	//    a
++	//  b c d
++	//    e
++	// Then takes magnitude from abs average of both sides of 'c'.
++	// Length converts gradient reversal to 0, smoothly to non-reversal at 1, shaped, then adding horz and vert terms.
++	float dc = lD - lC;
++	float cb = lC - lB;
++	float lenX = max(abs(dc), abs(cb));
++	lenX = APrxLoRcpF1(lenX);
++	float dirX = lD - lB;
++	lenX = clamp(abs(dirX) * lenX, 0.0, 1.0);
++	lenX *= lenX;
++	// Repeat for the y axis.
++	float ec = lE - lC;
++	float ca = lC - lA;
++	float lenY = max(abs(ec), abs(ca));
++	lenY = APrxLoRcpF1(lenY);
++	float dirY = lE - lA;
++	lenY = clamp(abs(dirY) * lenY, 0.0, 1.0);
++	lenY *= lenY;
++#if (FSR_EASU_SIMPLE_ANALYSIS == 1)
++	len = lenX + lenY;
++	dir = vec2(dirX, dirY);
++#elif (FSR_EASU_SIMPLE_ANALYSIS == 0)
++	dir += vec2(dirX, dirY) * w;
++	len += dot(vec2(w), vec2(lenX, lenY));
++#endif
++}
++
++vec4 hook() {
++	// Result
++	vec4 pix = vec4(0.0, 0.0, 0.0, 1.0);
++
++	//------------------------------------------------------------------------------------------------------------------------------
++	//      +---+---+
++	//      |   |   |
++	//      +--(0)--+
++	//      | b | c |
++	//  +---F---+---+---+
++	//  | e | f | g | h |
++	//  +--(1)--+--(2)--+
++	//  | i | j | k | l |
++	//  +---+---+---+---+
++	//      | n | o |
++	//      +--(3)--+
++	//      |   |   |
++	//      +---+---+
++	// Get position of 'F'.
++	vec2 pp = HOOKED_pos * HOOKED_size - vec2(0.5);
++	vec2 fp = floor(pp);
++	pp -= fp;
++	//------------------------------------------------------------------------------------------------------------------------------
++	// 12-tap kernel.
++	//    b c
++	//  e f g h
++	//  i j k l
++	//    n o
++	// Gather 4 ordering.
++	//  a b
++	//  r g
++	// Allowing dead-code removal to remove the 'z's.
++#if (defined(HOOKED_gather) && (__VERSION__ >= 400 || (GL_ES && __VERSION__ >= 310)))
++	vec4 bczzL = HOOKED_gather(vec2((fp + vec2(1.0, -1.0)) * HOOKED_pt), 0);
++	vec4 ijfeL = HOOKED_gather(vec2((fp + vec2(0.0,  1.0)) * HOOKED_pt), 0);
++	vec4 klhgL = HOOKED_gather(vec2((fp + vec2(2.0,  1.0)) * HOOKED_pt), 0);
++	vec4 zzonL = HOOKED_gather(vec2((fp + vec2(1.0,  3.0)) * HOOKED_pt), 0);
++#else
++	// pre-OpenGL 4.0 compatibility
++	float b = HOOKED_tex(vec2((fp + vec2(0.5, -0.5)) * HOOKED_pt)).r;
++	float c = HOOKED_tex(vec2((fp + vec2(1.5, -0.5)) * HOOKED_pt)).r;
++
++	float e = HOOKED_tex(vec2((fp + vec2(-0.5, 0.5)) * HOOKED_pt)).r;
++	float f = HOOKED_tex(vec2((fp + vec2( 0.5, 0.5)) * HOOKED_pt)).r;
++	float g = HOOKED_tex(vec2((fp + vec2( 1.5, 0.5)) * HOOKED_pt)).r;
++	float h = HOOKED_tex(vec2((fp + vec2( 2.5, 0.5)) * HOOKED_pt)).r;
++
++	float i = HOOKED_tex(vec2((fp + vec2(-0.5, 1.5)) * HOOKED_pt)).r;
++	float j = HOOKED_tex(vec2((fp + vec2( 0.5, 1.5)) * HOOKED_pt)).r;
++	float k = HOOKED_tex(vec2((fp + vec2( 1.5, 1.5)) * HOOKED_pt)).r;
++	float l = HOOKED_tex(vec2((fp + vec2( 2.5, 1.5)) * HOOKED_pt)).r;
++
++	float n = HOOKED_tex(vec2((fp + vec2(0.5, 2.5) ) * HOOKED_pt)).r;
++	float o = HOOKED_tex(vec2((fp + vec2(1.5, 2.5) ) * HOOKED_pt)).r;
++
++	vec4 bczzL = vec4(b, c, 0.0, 0.0);
++	vec4 ijfeL = vec4(i, j, f, e);
++	vec4 klhgL = vec4(k, l, h, g);
++	vec4 zzonL = vec4(0.0, 0.0, o, n);
++#endif
++	//------------------------------------------------------------------------------------------------------------------------------
++	// Rename.
++	float bL = bczzL.x;
++	float cL = bczzL.y;
++	float iL = ijfeL.x;
++	float jL = ijfeL.y;
++	float fL = ijfeL.z;
++	float eL = ijfeL.w;
++	float kL = klhgL.x;
++	float lL = klhgL.y;
++	float hL = klhgL.z;
++	float gL = klhgL.w;
++	float oL = zzonL.z;
++	float nL = zzonL.w;
++
++#if (FSR_PQ == 1)
++	// Not the most performance-friendly solution, but should work until mpv adds proper gamma transformation functions for shaders
++	bL = ToGamma2(bL);
++	cL = ToGamma2(cL);
++	iL = ToGamma2(iL);
++	jL = ToGamma2(jL);
++	fL = ToGamma2(fL);
++	eL = ToGamma2(eL);
++	kL = ToGamma2(kL);
++	lL = ToGamma2(lL);
++	hL = ToGamma2(hL);
++	gL = ToGamma2(gL);
++	oL = ToGamma2(oL);
++	nL = ToGamma2(nL);
++#endif
++
++	// Accumulate for bilinear interpolation.
++	vec2 dir = vec2(0.0);
++	float len = 0.0;
++#if (FSR_EASU_SIMPLE_ANALYSIS == 1)
++	FsrEasuSet(dir, len, pp, bL, cL, iL, jL, fL, eL, kL, lL, hL, gL, oL, nL);
++#elif (FSR_EASU_SIMPLE_ANALYSIS == 0)
++	FsrEasuSet(dir, len, pp, true, false, false, false, bL, eL, fL, gL, jL);
++	FsrEasuSet(dir, len, pp, false, true, false, false, cL, fL, gL, hL, kL);
++	FsrEasuSet(dir, len, pp, false, false, true, false, fL, iL, jL, kL, nL);
++	FsrEasuSet(dir, len, pp, false, false, false, true, gL, jL, kL, lL, oL);
++#endif
++	//------------------------------------------------------------------------------------------------------------------------------
++	// Normalize with approximation, and cleanup close to zero.
++	vec2 dir2 = dir * dir;
++	float dirR = dir2.x + dir2.y;
++	bool zro = dirR < float(1.0 / FSR_EASU_DIR_THRESHOLD);
++	dirR = APrxLoRsqF1(dirR);
++#if (FSR_EASU_QUIT_EARLY == 1)
++	if (zro) {
++		vec4 w = vec4(0.0);
++		w.x = (1.0 - pp.x) * (1.0 - pp.y);
++		w.y =        pp.x  * (1.0 - pp.y);
++		w.z = (1.0 - pp.x) *        pp.y;
++		w.w =        pp.x  *        pp.y;
++
++		pix.r = clamp(dot(w, vec4(fL, gL, jL, kL)), 0.0, 1.0);
++		return pix;
++	}
++#elif (FSR_EASU_QUIT_EARLY == 0)
++	dirR = zro ? 1.0 : dirR;
++	dir.x = zro ? 1.0 : dir.x;
++#endif
++	dir *= vec2(dirR);
++	// Transform from {0 to 2} to {0 to 1} range, and shape with square.
++	len = len * 0.5;
++	len *= len;
++	// Stretch kernel {1.0 vert|horz, to sqrt(2.0) on diagonal}.
++	float stretch = (dir.x * dir.x + dir.y * dir.y) * APrxLoRcpF1(max(abs(dir.x), abs(dir.y)));
++	// Anisotropic length after rotation,
++	//  x := 1.0 lerp to 'stretch' on edges
++	//  y := 1.0 lerp to 2x on edges
++	vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 + -0.5 * len);
++	// Based on the amount of 'edge',
++	// the window shifts from +/-{sqrt(2.0) to slightly beyond 2.0}.
++	float lob = 0.5 + float((1.0 / 4.0 - 0.04) - 0.5) * len;
++	// Set distance^2 clipping point to the end of the adjustable window.
++	float clp = APrxLoRcpF1(lob);
++	//------------------------------------------------------------------------------------------------------------------------------
++	// Accumulation
++	//    b c
++	//  e f g h
++	//  i j k l
++	//    n o
++	float aC = 0.0;
++	float aW = 0.0;
++	FsrEasuTap(aC, aW, vec2( 0.0,-1.0) - pp, dir, len2, lob, clp, bL); // b
++	FsrEasuTap(aC, aW, vec2( 1.0,-1.0) - pp, dir, len2, lob, clp, cL); // c
++	FsrEasuTap(aC, aW, vec2(-1.0, 1.0) - pp, dir, len2, lob, clp, iL); // i
++	FsrEasuTap(aC, aW, vec2( 0.0, 1.0) - pp, dir, len2, lob, clp, jL); // j
++	FsrEasuTap(aC, aW, vec2( 0.0, 0.0) - pp, dir, len2, lob, clp, fL); // f
++	FsrEasuTap(aC, aW, vec2(-1.0, 0.0) - pp, dir, len2, lob, clp, eL); // e
++	FsrEasuTap(aC, aW, vec2( 1.0, 1.0) - pp, dir, len2, lob, clp, kL); // k
++	FsrEasuTap(aC, aW, vec2( 2.0, 1.0) - pp, dir, len2, lob, clp, lL); // l
++	FsrEasuTap(aC, aW, vec2( 2.0, 0.0) - pp, dir, len2, lob, clp, hL); // h
++	FsrEasuTap(aC, aW, vec2( 1.0, 0.0) - pp, dir, len2, lob, clp, gL); // g
++	FsrEasuTap(aC, aW, vec2( 1.0, 2.0) - pp, dir, len2, lob, clp, oL); // o
++	FsrEasuTap(aC, aW, vec2( 0.0, 2.0) - pp, dir, len2, lob, clp, nL); // n
++	//------------------------------------------------------------------------------------------------------------------------------
++	// Normalize and dering.
++	pix.r = aC / aW;
++#if (FSR_EASU_DERING == 1)
++	float min1 = min(AMin3F1(fL, gL, jL), kL);
++	float max1 = max(AMax3F1(fL, gL, jL), kL);
++	pix.r = clamp(pix.r, min1, max1);
++#endif
++	pix.r = clamp(pix.r, 0.0, 1.0);
++
++	return pix;
++}
++
++//!HOOK LUMA
++//!BIND EASUTEX
++//!DESC FidelityFX Super Resolution v1.0.2 (RCAS)
++//!WIDTH EASUTEX.w
++//!HEIGHT EASUTEX.h
++//!COMPONENTS 1
++
++// User variables - RCAS
++// #define SHARPNESS 0.2 // Controls the amount of sharpening. The scale is {0.0 := maximum, to N>0, where N is the number of stops (halving) of the reduction of sharpness}. 0.0 to 2.0.
++#define FSR_RCAS_DENOISE 1 // If set to 1, lessens the sharpening on noisy areas. Can be disabled for better performance. 0 or 1.
++// #define FSR_PQ 0 // Whether the source content has PQ gamma or not. Needs to be set to the same value for both passes. 0 or 1.
++
++// Custom
++#define SHARPNESS 0.75
++#define FSR_PQ 1
++
++// Shader code
++
++#define FSR_RCAS_LIMIT (0.25 - (1.0 / 16.0)) // This is set at the limit of providing unnatural results for sharpening.
++
++float APrxMedRcpF1(float a) {
++	float b = uintBitsToFloat(uint(0x7ef19fff) - floatBitsToUint(a));
++	return b * (-b * a + 2.0);
++}
++
++float AMax3F1(float x, float y, float z) {
++	return max(x, max(y, z));
++}
++
++float AMin3F1(float x, float y, float z) {
++	return min(x, min(y, z));
++}
++
++#if (FSR_PQ == 1)
++
++float FromGamma2(float a) {
++	return sqrt(sqrt(a));
++}
++
++#endif
++
++vec4 hook() {
++	// Algorithm uses minimal 3x3 pixel neighborhood.
++	//    b
++	//  d e f
++	//    h
++#if (defined(EASUTEX_gather) && (__VERSION__ >= 400 || (GL_ES && __VERSION__ >= 310)))
++	vec3 bde = EASUTEX_gather(EASUTEX_pos + EASUTEX_pt * vec2(-0.5), 0).xyz;
++	float b = bde.z;
++	float d = bde.x;
++	float e = bde.y;
++
++	vec2 fh = EASUTEX_gather(EASUTEX_pos + EASUTEX_pt * vec2(0.5), 0).zx;
++	float f = fh.x;
++	float h = fh.y;
++#else
++	float b = EASUTEX_texOff(vec2( 0.0, -1.0)).r;
++	float d = EASUTEX_texOff(vec2(-1.0,  0.0)).r;
++	float e = EASUTEX_tex(EASUTEX_pos).r;
++	float f = EASUTEX_texOff(vec2(1.0, 0.0)).r;
++	float h = EASUTEX_texOff(vec2(0.0, 1.0)).r;
++#endif
++
++	// Min and max of ring.
++	float mn1L = min(AMin3F1(b, d, f), h);
++	float mx1L = max(AMax3F1(b, d, f), h);
++
++	// Immediate constants for peak range.
++	vec2 peakC = vec2(1.0, -1.0 * 4.0);
++
++	// Limiters, these need to be high precision RCPs.
++	float hitMinL = min(mn1L, e) / (4.0 * mx1L);
++	float hitMaxL = (peakC.x - max(mx1L, e)) / (4.0 * mn1L + peakC.y);
++	float lobeL = max(-hitMinL, hitMaxL);
++	float lobe = max(float(-FSR_RCAS_LIMIT), min(lobeL, 0.0)) * exp2(-clamp(float(SHARPNESS), 0.0, 2.0));
++
++	// Apply noise removal.
++#if (FSR_RCAS_DENOISE == 1)
++	// Noise detection.
++	float nz = 0.25 * b + 0.25 * d + 0.25 * f + 0.25 * h - e;
++	nz = clamp(abs(nz) * APrxMedRcpF1(AMax3F1(AMax3F1(b, d, e), f, h) - AMin3F1(AMin3F1(b, d, e), f, h)), 0.0, 1.0);
++	nz = -0.5 * nz + 1.0;
++	lobe *= nz;
++#endif
++
++	// Resolve, which needs the medium precision rcp approximation to avoid visible tonality changes.
++	float rcpL = APrxMedRcpF1(4.0 * lobe + 1.0);
++	vec4 pix = vec4(0.0, 0.0, 0.0, 1.0);
++	pix.r = float((lobe * b + lobe * d + lobe * h + lobe * f + e) * rcpL);
++#if (FSR_PQ == 1)
++	pix.r = FromGamma2(pix.r);
++#endif
++
++	return pix;
++}
+diff --git a/app/streaming/session.cpp b/app/streaming/session.cpp
+index 40c1e59..dfcda8b 100644
+--- a/app/streaming/session.cpp
++++ b/app/streaming/session.cpp
+@@ -278,7 +278,8 @@ void Session::clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlag
+ bool Session::chooseDecoder(StreamingPreferences::VideoDecoderSelection vds,
+                             StreamingPreferences::RendererSelection renderer,
+                             SDL_Window* window, int videoFormat, int width, int height,
+-                            int frameRate, bool enableVsync, bool enableFramePacing, bool testOnly, IVideoDecoder*& chosenDecoder)
++                            int frameRate, bool enableVsync, bool enableFramePacing,
++                            bool enableFsr1, bool testOnly, IVideoDecoder*& chosenDecoder)
+ {
+     DECODER_PARAMETERS params;
+ 
+@@ -294,6 +295,7 @@ bool Session::chooseDecoder(StreamingPreferences::VideoDecoderSelection vds,
+     params.window = window;
+     params.enableVsync = enableVsync;
+     params.enableFramePacing = enableFramePacing;
++    params.enableFsr1 = enableFsr1;
+     params.testOnly = testOnly;
+     params.vds = vds;
+     params.renderer = renderer;
+@@ -400,7 +402,7 @@ void Session::getDecoderInfo(SDL_Window* window,
+     if (chooseDecoder(StreamingPreferences::VDS_FORCE_HARDWARE,
+                       StreamingPreferences::RS_PROBE_ONLY,
+                       window, VIDEO_FORMAT_H265_MAIN10, 1920, 1080, 60,
+-                      false, false, true, decoder)) {
++                      false, false, false, true, decoder)) {
+         isHardwareAccelerated = decoder->isHardwareAccelerated();
+         isFullScreenOnly = decoder->isAlwaysFullScreen();
+         isHdrSupported = decoder->isHdrSupported();
+@@ -414,7 +416,7 @@ void Session::getDecoderInfo(SDL_Window* window,
+     if (chooseDecoder(StreamingPreferences::VDS_FORCE_HARDWARE,
+                       StreamingPreferences::RS_PROBE_ONLY,
+                       window, VIDEO_FORMAT_AV1_MAIN10, 1920, 1080, 60,
+-                      false, false, true, decoder)) {
++                      false, false, false, true, decoder)) {
+         // If we've got a working AV1 Main 10-bit decoder, we'll enable the HDR checkbox
+         // but we will still continue probing to get other attributes for HEVC or H.264
+         // decoders. See the AV1 comment at the top of the function for more info.
+@@ -427,11 +429,11 @@ void Session::getDecoderInfo(SDL_Window* window,
+         if (chooseDecoder(StreamingPreferences::VDS_FORCE_SOFTWARE,
+                           StreamingPreferences::RS_PROBE_ONLY,
+                           window, VIDEO_FORMAT_H265_MAIN10, 1920, 1080, 60,
+-                          false, false, true, decoder) ||
++                          false, false, false, true, decoder) ||
+             chooseDecoder(StreamingPreferences::VDS_FORCE_SOFTWARE,
+                           StreamingPreferences::RS_PROBE_ONLY,
+                           window, VIDEO_FORMAT_AV1_MAIN10, 1920, 1080, 60,
+-                          false, false, true, decoder)) {
++                          false, false, false, true, decoder)) {
+             isHdrSupported = decoder->isHdrSupported();
+             delete decoder;
+         }
+@@ -446,7 +448,7 @@ void Session::getDecoderInfo(SDL_Window* window,
+     if (chooseDecoder(StreamingPreferences::VDS_FORCE_HARDWARE,
+                       StreamingPreferences::RS_PROBE_ONLY,
+                       window, VIDEO_FORMAT_H265, 1920, 1080, 60,
+-                      false, false, true, decoder)) {
++                      false, false, false, true, decoder)) {
+         isHardwareAccelerated = decoder->isHardwareAccelerated();
+         isFullScreenOnly = decoder->isAlwaysFullScreen();
+         maxResolution = decoder->getDecoderMaxResolution();
+@@ -460,7 +462,7 @@ void Session::getDecoderInfo(SDL_Window* window,
+     if (chooseDecoder(StreamingPreferences::VDS_FORCE_HARDWARE,
+                       StreamingPreferences::RS_PROBE_ONLY,
+                       window, VIDEO_FORMAT_AV1_MAIN8, 1920, 1080, 60,
+-                      false, false, true, decoder)) {
++                      false, false, false, true, decoder)) {
+         isHardwareAccelerated = decoder->isHardwareAccelerated();
+         isFullScreenOnly = decoder->isAlwaysFullScreen();
+         maxResolution = decoder->getDecoderMaxResolution();
+@@ -475,7 +477,7 @@ void Session::getDecoderInfo(SDL_Window* window,
+     if (chooseDecoder(StreamingPreferences::VDS_AUTO,
+                       StreamingPreferences::RS_PROBE_ONLY,
+                       window, VIDEO_FORMAT_H264, 1920, 1080, 60,
+-                      false, false, true, decoder)) {
++                      false, false, false, true, decoder)) {
+         isHardwareAccelerated = decoder->isHardwareAccelerated();
+         isFullScreenOnly = decoder->isAlwaysFullScreen();
+         maxResolution = decoder->getDecoderMaxResolution();
+@@ -498,7 +500,7 @@ Session::getDecoderAvailability(SDL_Window* window,
+     if (!chooseDecoder(vds,
+                        StreamingPreferences::RS_PROBE_ONLY,
+                        window, videoFormat, width, height, frameRate,
+-                       false, false, true, decoder)) {
++                       false, false, false, true, decoder)) {
+         return DecoderAvailability::None;
+     }
+ 
+@@ -524,7 +526,7 @@ bool Session::populateDecoderProperties(SDL_Window* window)
+                        m_StreamConfig.width,
+                        m_StreamConfig.height,
+                        m_StreamConfig.fps,
+-                       false, false, true, decoder)) {
++                       false, false, false, true, decoder)) {
+         return false;
+     }
+ 
+@@ -2214,6 +2216,7 @@ void Session::exec()
+                                    m_ActiveVideoHeight, m_ActiveVideoFrameRate,
+                                    enableVsync,
+                                    enableVsync && m_Preferences->framePacing,
++                                   m_Preferences->fsr1Upscaling,
+                                    false,
+                                    s_ActiveSession->m_VideoDecoder)) {
+                     SDL_UnlockMutex(m_DecoderLock);
+diff --git a/app/streaming/session.h b/app/streaming/session.h
+index 53ac9e0..aa72126 100644
+--- a/app/streaming/session.h
++++ b/app/streaming/session.h
+@@ -187,6 +187,7 @@ private:
+                        StreamingPreferences::RendererSelection renderer,
+                        SDL_Window* window, int videoFormat, int width, int height,
+                        int frameRate, bool enableVsync, bool enableFramePacing,
++                       bool enableFsr1,
+                        bool testOnly,
+                        IVideoDecoder*& chosenDecoder);
+ 
+diff --git a/app/streaming/video/decoder.h b/app/streaming/video/decoder.h
+index 2214850..8b030a9 100644
+--- a/app/streaming/video/decoder.h
++++ b/app/streaming/video/decoder.h
+@@ -44,6 +44,7 @@ typedef struct _DECODER_PARAMETERS {
+     int frameRate;
+     bool enableVsync;
+     bool enableFramePacing;
++    bool enableFsr1;
+     bool testOnly;
+ } DECODER_PARAMETERS, *PDECODER_PARAMETERS;
+ 
+diff --git a/app/streaming/video/ffmpeg-renderers/plvk.cpp b/app/streaming/video/ffmpeg-renderers/plvk.cpp
+index 3a7b2a1..e62dea3 100644
+--- a/app/streaming/video/ffmpeg-renderers/plvk.cpp
++++ b/app/streaming/video/ffmpeg-renderers/plvk.cpp
+@@ -181,6 +181,15 @@ PlVkRenderer::~PlVkRenderer()
+         DrmMasterLocker locker;
+ 
+         pl_renderer_destroy(&m_Renderer);
++
++        if (m_FsrHookHdr != nullptr && m_FsrHookHdr != m_FsrHook) {
++            pl_mpv_user_shader_destroy(&m_FsrHookHdr);
++        }
++        m_FsrHookHdr = nullptr;
++        if (m_FsrHook != nullptr) {
++            pl_mpv_user_shader_destroy(&m_FsrHook);
++        }
++
+         pl_swapchain_destroy(&m_Swapchain);
+ #ifdef Q_OS_DARWIN
+         m_MetalTextureFactory.reset();
+@@ -628,9 +637,60 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
+     }
+ #endif
+ 
++    if (params->enableFsr1) {
++        std::string fsrShader = loadGLSL(":/enhancer/FSR1.glsl");
++        m_FsrHook = pl_mpv_user_shader_parse(m_Vulkan->gpu,
++                                             fsrShader.c_str(),
++                                             fsrShader.size());
++        m_FsrRenderParams.hooks = &m_FsrHook;
++        m_FsrRenderParams.num_hooks = m_FsrHook ? 1 : 0;
++
++        if (params->videoFormat & VIDEO_FORMAT_MASK_10BIT) {
++            std::string fsrShaderHdr = loadGLSL(":/enhancer/FSR1_HDR.glsl");
++            m_FsrHookHdr = pl_mpv_user_shader_parse(m_Vulkan->gpu,
++                                                    fsrShaderHdr.c_str(),
++                                                    fsrShaderHdr.size());
++            m_FsrRenderParamsHdr.hooks = &m_FsrHookHdr;
++            m_FsrRenderParamsHdr.num_hooks = m_FsrHookHdr ? 1 : 0;
++        }
++        else {
++            m_FsrRenderParamsHdr.hooks = &m_FsrHook;
++            m_FsrRenderParamsHdr.num_hooks = m_FsrHook ? 1 : 0;
++        }
++
++        m_Fsr1Enabled = m_FsrRenderParams.num_hooks == 1 &&
++                        m_FsrRenderParamsHdr.num_hooks == 1;
++        if (m_Fsr1Enabled) {
++            int drawableWidth, drawableHeight;
++            SDL_Vulkan_GetDrawableSize(m_Window, &drawableWidth, &drawableHeight);
++            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
++                        "FSR1 upscaling enabled: %dx%d -> %dx%d",
++                        params->width, params->height,
++                        drawableWidth, drawableHeight);
++        }
++        else {
++            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
++                         "Failed to parse FSR1 shader; continuing without upscaling");
++        }
++    }
++
+     return true;
+ }
+ 
++std::string PlVkRenderer::loadGLSL(const QString& path)
++{
++    QFile file(path);
++    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
++        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
++                     "Cannot open GLSL file: %s",
++                     path.toUtf8().constData());
++        return {};
++    }
++
++    QByteArray data = file.readAll();
++    return std::string(data.constData(), data.size());
++}
++
+ 
+ bool PlVkRenderer::createSwapchain(int depth)
+ {
+@@ -1077,7 +1137,13 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
+     // Render the video image and overlays into the swapchain buffer
+     targetFrame.num_overlays = (int)overlays.size();
+     targetFrame.overlays = overlays.data();
+-    if (!pl_render_image(m_Renderer, &mappedFrame, &targetFrame, &pl_render_fast_params)) {
++    const pl_render_params* renderParams = &pl_render_fast_params;
++    if (m_Fsr1Enabled) {
++        renderParams = frame->color_trc == AVCOL_TRC_SMPTE2084 ?
++                           &m_FsrRenderParamsHdr : &m_FsrRenderParams;
++    }
++
++    if (!pl_render_image(m_Renderer, &mappedFrame, &targetFrame, renderParams)) {
+         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                      "pl_render_image() failed");
+         // NB: We must fallthrough to call pl_swapchain_submit_frame()
+@@ -1273,6 +1339,11 @@ void PlVkRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
+ 
+ bool PlVkRenderer::notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO info)
+ {
++    if (m_Fsr1Enabled &&
++            (info->stateChangeFlags & (WINDOW_STATE_CHANGE_SIZE | WINDOW_STATE_CHANGE_DISPLAY))) {
++        return false;
++    }
++
+     // We can transparently handle size and display changes
+     return !(info->stateChangeFlags & ~(WINDOW_STATE_CHANGE_SIZE | WINDOW_STATE_CHANGE_DISPLAY));
+ }
+diff --git a/app/streaming/video/ffmpeg-renderers/plvk.h b/app/streaming/video/ffmpeg-renderers/plvk.h
+index fdef2f8..1f56a35 100644
+--- a/app/streaming/video/ffmpeg-renderers/plvk.h
++++ b/app/streaming/video/ffmpeg-renderers/plvk.h
+@@ -9,6 +9,9 @@
+ #include <libplacebo/log.h>
+ #include <libplacebo/renderer.h>
+ #include <libplacebo/vulkan.h>
++#include <libplacebo/shaders/custom.h>
++
++#include <QFile>
+ 
+ #ifdef Q_OS_DARWIN
+ class MetalVulkanTextureFactory {
+@@ -74,6 +77,7 @@ private:
+     bool isPresentModeSupportedByPhysicalDevice(VkPhysicalDevice device, VkPresentModeKHR presentMode);
+     bool isColorSpaceSupportedByPhysicalDevice(VkPhysicalDevice device, VkColorSpaceKHR colorSpace);
+     bool isSurfacePresentationSupportedByPhysicalDevice(VkPhysicalDevice device);
++    std::string loadGLSL(const QString& path);
+ 
+     // The backend renderer if we're frontend-only
+     IFFmpegRenderer* m_Backend;
+@@ -141,6 +145,13 @@ private:
+     // Device context used for hwaccel decoders
+     AVBufferRef* m_HwDeviceCtx = nullptr;
+ 
++    // FidelityFX Super Resolution 1.0 (EASU + RCAS) libplacebo hooks
++    bool m_Fsr1Enabled = false;
++    const pl_hook* m_FsrHook = nullptr;
++    const pl_hook* m_FsrHookHdr = nullptr;
++    pl_render_params m_FsrRenderParams = pl_render_fast_params;
++    pl_render_params m_FsrRenderParamsHdr = pl_render_fast_params;
++
+     // Vulkan functions we call directly
+     PFN_vkDestroySurfaceKHR fn_vkDestroySurfaceKHR = nullptr;
+     PFN_vkGetPhysicalDeviceQueueFamilyProperties2 fn_vkGetPhysicalDeviceQueueFamilyProperties2 = nullptr;

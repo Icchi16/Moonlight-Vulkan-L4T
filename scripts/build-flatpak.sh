@@ -43,9 +43,11 @@ manifest="$manifest_repo/com.moonlight_stream.Moonlight.NightlyVulkan.json"
 builder_dir="$flatpak_work/build-dir"
 bundle="$DIST_DIR/moonlight-nightly-vulkan.flatpak"
 build_info="$DIST_DIR/build-info.txt"
-patch_name="moonlight-mspeedo-vrr.patch"
-cp "$ROOT_DIR/patches/$patch_name" "$manifest_repo/$patch_name"
-export patch_name
+latency_patch_name="moonlight-mspeedo-vrr.patch"
+fsr_patch_name="moonlight-fsr1-linux.patch"
+cp "$ROOT_DIR/patches/$latency_patch_name" "$manifest_repo/$latency_patch_name"
+cp "$ROOT_DIR/patches/$fsr_patch_name" "$manifest_repo/$fsr_patch_name"
+export latency_patch_name fsr_patch_name
 cp "$base_manifest" "$manifest"
 
 # Chỉ thay source Moonlight và environment; dependencies/patch từ Flathub được giữ nguyên.
@@ -75,10 +77,13 @@ args[:] = [a for a in args
            if not a.startswith("--env=LIBVA_DRIVER_NAME=")
            and a != "--unset-env=LIBVA_DRIVER_NAME"]
 args.append("--env=LIBVA_DRIVER_NAME=invalid")
-moonlight["sources"].append({
+moonlight["sources"].extend([{
     "type": "patch",
-    "path": os.environ["patch_name"],
-})
+    "path": os.environ["fsr_patch_name"],
+}, {
+    "type": "patch",
+    "path": os.environ["latency_patch_name"],
+}])
 with open(p, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -89,14 +94,16 @@ runtime_version="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); 
 sdk="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["sdk"])' "$manifest")"
 flatpak install --user -y flathub "$runtime//$runtime_version" "$sdk//$runtime_version"
 
-note "Build Flatpak Moonlight $MOONLIGHT_SHA + mspeedo VRR + Vulkan Video"
+note "Build Flatpak Moonlight $MOONLIGHT_SHA + FSR1 + mspeedo VRR + Vulkan Video"
 "${flatpak_builder[@]}" --user --force-clean --install-deps-from=flathub \
     --repo="$flatpak_work/repo" "$builder_dir" "$manifest"
 flatpak build-bundle "$flatpak_work/repo" "$bundle" \
     com.moonlight_stream.Moonlight
-write_build_info flatpak-mspeedo "$build_info"
+write_build_info flatpak-fsr1-mspeedo "$build_info"
 {
     printf 'latency_patch=mspeedo-180f234-port\n'
     printf 'decoder_policy=LIBVA_DRIVER_NAME=invalid\n'
+    printf 'video_enhancement=FSR1-libplacebo\n'
+    printf 'video_enhancement_patch=moonlight-fsr1-linux.patch\n'
 } >> "$build_info"
 note "Xong: $bundle"

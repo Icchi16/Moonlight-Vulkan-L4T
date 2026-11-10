@@ -1,0 +1,267 @@
+diff --git a/app/streaming/input/gamepad.cpp b/app/streaming/input/gamepad.cpp
+index d4e4c03f..b06e24ab 100644
+--- a/app/streaming/input/gamepad.cpp
++++ b/app/streaming/input/gamepad.cpp
+@@ -16,6 +16,11 @@
+ // Determines how fast the mouse will move each interval
+ #define MOUSE_EMULATION_MOTION_MULTIPLIER 4
+ 
++// Motion fallback for hosts that never request motion events
++// (override the rate with MOTION_FALLBACK_HZ, 0 disables the fallback)
++#define MOTION_FALLBACK_DELAY_MS 3000
++#define MOTION_FALLBACK_DEFAULT_HZ 100
++
+ // Determines the maximum motion amount before allowing movement
+ #define MOUSE_EMULATION_DEADZONE 2
+ 
+@@ -432,6 +437,21 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
+         return;
+     }
+ 
++    if (state->motionFallbackDeadline != 0 && !state->motionHostRequested &&
++            SDL_TICKS_PASSED(SDL_GetTicks(), state->motionFallbackDeadline)) {
++        state->motionFallbackDeadline = 0;
++        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
++                    "Host never requested motion events for gamepad %d; sending them anyway every %u ms (motion fallback)",
++                    state->index,
++                    state->motionFallbackPeriodMs);
++        if (SDL_GameControllerHasSensor(state->controller, SDL_SENSOR_ACCEL)) {
++            state->accelReportPeriodMs = state->motionFallbackPeriodMs;
++        }
++        if (SDL_GameControllerHasSensor(state->controller, SDL_SENSOR_GYRO)) {
++            state->gyroReportPeriodMs = state->motionFallbackPeriodMs;
++        }
++    }
++
+     switch (event->sensor) {
+     case SDL_SENSOR_ACCEL:
+         if (state->accelReportPeriodMs &&
+@@ -440,7 +460,13 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
+             memcpy(state->lastAccelEventData, event->data, sizeof(event->data));
+             state->lastAccelEventTime = event->timestamp;
+ 
+-            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_ACCEL, event->data[0], event->data[1], event->data[2]);
++            int err = LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_ACCEL, event->data[0], event->data[1], event->data[2]);
++            if (err != 0 && !(state->motionSendErrorLogged & (1 << LI_MOTION_TYPE_ACCEL))) {
++                state->motionSendErrorLogged |= (1 << LI_MOTION_TYPE_ACCEL);
++                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
++                            "LiSendControllerMotionEvent failed for gamepad %d (type %d): %d",
++                            state->index, LI_MOTION_TYPE_ACCEL, err);
++            }
+         }
+         break;
+     case SDL_SENSOR_GYRO:
+@@ -451,10 +477,16 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
+             state->lastGyroEventTime = event->timestamp;
+ 
+             // Convert rad/s to deg/s
+-            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_GYRO,
+-                                        event->data[0] * 57.2957795f,
+-                                        event->data[1] * 57.2957795f,
+-                                        event->data[2] * 57.2957795f);
++            int err = LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_GYRO,
++                                                  event->data[0] * 57.2957795f,
++                                                  event->data[1] * 57.2957795f,
++                                                  event->data[2] * 57.2957795f);
++            if (err != 0 && !(state->motionSendErrorLogged & (1 << LI_MOTION_TYPE_GYRO))) {
++                state->motionSendErrorLogged |= (1 << LI_MOTION_TYPE_GYRO);
++                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
++                            "LiSendControllerMotionEvent failed for gamepad %d (type %d): %d",
++                            state->index, LI_MOTION_TYPE_GYRO, err);
++            }
+         }
+         break;
+     }
+@@ -761,6 +793,34 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
+             type == LI_CTYPE_PS;
+ 
+         LiSendControllerArrivalEvent(state->index, m_GamepadMask, type, supportedButtonFlags, capabilities);
++
++        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
++                    "Gamepad %d motion sensors: accel=%d gyro=%d",
++                    state->index,
++                    (capabilities & LI_CCAP_ACCEL) ? 1 : 0,
++                    (capabilities & LI_CCAP_GYRO) ? 1 : 0);
++
++        // Arm the motion fallback. The sensors are enabled now but nothing is
++        // sent until either the host asks for motion or the grace period ends.
++        state->motionHostRequested = false;
++        state->motionFallbackDeadline = 0;
++        if (capabilities & (LI_CCAP_ACCEL | LI_CCAP_GYRO)) {
++            uint16_t fallbackHz = MOTION_FALLBACK_DEFAULT_HZ;
++            Utils::getEnvironmentVariableOverride("MOTION_FALLBACK_HZ", &fallbackHz);
++            if (fallbackHz != 0) {
++                state->motionFallbackPeriodMs = (uint8_t)SDL_max(1, SDL_min(255, 1000 / fallbackHz));
++                state->motionFallbackDeadline = SDL_GetTicks() + MOTION_FALLBACK_DELAY_MS;
++                if (state->motionFallbackDeadline == 0) {
++                    state->motionFallbackDeadline = 1;
++                }
++                if (capabilities & LI_CCAP_ACCEL) {
++                    SDL_GameControllerSetSensorEnabled(state->controller, SDL_SENSOR_ACCEL, SDL_TRUE);
++                }
++                if (capabilities & LI_CCAP_GYRO) {
++                    SDL_GameControllerSetSensorEnabled(state->controller, SDL_SENSOR_GYRO, SDL_TRUE);
++                }
++            }
++        }
+ #else
+ 
+         // Send an empty event to tell the PC we've arrived
+@@ -914,6 +974,12 @@ void SdlInputHandler::rumbleTriggers(uint16_t controllerNumber, uint16_t leftTri
+ 
+ void SdlInputHandler::setMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz)
+ {
++    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
++                "Host requested motion type %u at %u Hz for gamepad %u",
++                motionType,
++                reportRateHz,
++                controllerNumber);
++
+     // Make sure the controller number is within our supported count
+     if (controllerNumber >= MAX_GAMEPADS) {
+         return;
+@@ -929,21 +995,40 @@ void SdlInputHandler::setMotionEventState(uint16_t controllerNumber, uint8_t mot
+     }
+ 
+ #if SDL_VERSION_ATLEAST(2, 0, 14)
+-    if (m_GamepadState[controllerNumber].controller != nullptr) {
+-        uint8_t reportPeriodMs = reportRateHz ? (1000 / reportRateHz) : 0;
+-
+-        switch (motionType) {
+-        case LI_MOTION_TYPE_ACCEL:
+-            m_GamepadState[controllerNumber].accelReportPeriodMs = reportPeriodMs;
+-            SDL_GameControllerSetSensorEnabled(m_GamepadState[controllerNumber].controller, SDL_SENSOR_ACCEL, reportRateHz ? SDL_TRUE : SDL_FALSE);
+-            break;
+-
+-        case LI_MOTION_TYPE_GYRO:
+-            m_GamepadState[controllerNumber].gyroReportPeriodMs = reportPeriodMs;
+-            SDL_GameControllerSetSensorEnabled(m_GamepadState[controllerNumber].controller, SDL_SENSOR_GYRO, reportRateHz ? SDL_TRUE : SDL_FALSE);
++    // The host addresses gamepads by their player index, which is not always
++    // the same as the slot in m_GamepadState (e.g. in single controller mode).
++    GamepadState* state = nullptr;
++    for (int i = 0; i < MAX_GAMEPADS; i++) {
++        if (m_GamepadState[i].controller != nullptr && m_GamepadState[i].index == controllerNumber) {
++            state = &m_GamepadState[i];
+             break;
+         }
+     }
++
++    if (state == nullptr) {
++        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
++                    "Motion request for gamepad %u ignored: no such gamepad",
++                    controllerNumber);
++        return;
++    }
++
++    // The host has spoken, so the fallback must not override its choice
++    state->motionHostRequested = true;
++    state->motionFallbackDeadline = 0;
++
++    uint8_t reportPeriodMs = reportRateHz ? (uint8_t)SDL_max(1, SDL_min(255, 1000 / reportRateHz)) : 0;
++
++    switch (motionType) {
++    case LI_MOTION_TYPE_ACCEL:
++        state->accelReportPeriodMs = reportPeriodMs;
++        SDL_GameControllerSetSensorEnabled(state->controller, SDL_SENSOR_ACCEL, reportRateHz ? SDL_TRUE : SDL_FALSE);
++        break;
++
++    case LI_MOTION_TYPE_GYRO:
++        state->gyroReportPeriodMs = reportPeriodMs;
++        SDL_GameControllerSetSensorEnabled(state->controller, SDL_SENSOR_GYRO, reportRateHz ? SDL_TRUE : SDL_FALSE);
++        break;
++    }
+ #endif
+ }
+ 
+diff --git a/app/streaming/input/input.h b/app/streaming/input/input.h
+index 151c69c4..c24b370d 100644
+--- a/app/streaming/input/input.h
++++ b/app/streaming/input/input.h
+@@ -30,6 +30,14 @@ struct GamepadState {
+     uint8_t accelReportPeriodMs;
+     float lastAccelEventData[SDL_arraysize(SDL_ControllerSensorEvent::data)];
+     uint32_t lastAccelEventTime;
++
++    // Motion fallback: some hosts (e.g. Vibeshine's VHF Switch Pro profile)
++    // never send a motion-enable request, so we start sending motion
++    // ourselves if no request arrives within a short grace period.
++    bool motionHostRequested;
++    uint32_t motionFallbackDeadline; // 0 = no fallback pending
++    uint8_t motionFallbackPeriodMs;
++    uint8_t motionSendErrorLogged; // bitmask of (1 << motionType) already logged
+ #endif
+ 
+     int buttons;
+diff --git a/moonlight-common-c/moonlight-common-c/src/ControlStream.c b/moonlight-common-c/moonlight-common-c/src/ControlStream.c
+index 2dfb898..a7cff9f 100644
+--- a/moonlight-common-c/moonlight-common-c/src/ControlStream.c
++++ b/moonlight-common-c/moonlight-common-c/src/ControlStream.c
+@@ -122,6 +122,8 @@ static PLT_EVENT idrFrameRequiredEvent;
+ static PPLT_CRYPTO_CONTEXT encryptionCtx;
+ static PPLT_CRYPTO_CONTEXT decryptionCtx;
+ 
++uint8_t MotionRequestedMask[MOTION_REQUESTED_CONTROLLERS];
++
+ #define CONN_IMMEDIATE_POOR_LOSS_RATE 30
+ #define CONN_CONSECUTIVE_POOR_LOSS_RATE 15
+ #define CONN_OKAY_LOSS_RATE 5
+@@ -300,6 +302,7 @@ static bool supportsIdrFrameRequest;
+ // Initializes the control stream
+ int initializeControlStream(void) {
+     stopping = false;
++    memset(MotionRequestedMask, 0, sizeof(MotionRequestedMask));
+     PltCreateEvent(&idrFrameRequiredEvent);
+     LbqInitializeLinkedBlockingQueue(&referenceFrameControlQueue, 20);
+     LbqInitializeLinkedBlockingQueue(&frameFecStatusQueue, 8); // Limits number of frame status reports per periodic ping interval
+@@ -996,6 +999,16 @@ static void asyncCallbackThreadFunc(void* context) {
+ 
+         case IDX_SET_MOTION_EVENT:
+             // These events are infrequent and cannot be batched
++            if (queuedCb->data.setMotionEventState.controllerNumber < MOTION_REQUESTED_CONTROLLERS &&
++                queuedCb->data.setMotionEventState.motionType < 8) {
++                uint8_t bit = (uint8_t)(1 << queuedCb->data.setMotionEventState.motionType);
++                if (queuedCb->data.setMotionEventState.reportRateHz > 0) {
++                    MotionRequestedMask[queuedCb->data.setMotionEventState.controllerNumber] |= bit;
++                }
++                else {
++                    MotionRequestedMask[queuedCb->data.setMotionEventState.controllerNumber] &= (uint8_t)~bit;
++                }
++            }
+             ListenerCallbacks.setMotionEventState(queuedCb->data.setMotionEventState.controllerNumber,
+                                                   queuedCb->data.setMotionEventState.motionType,
+                                                   queuedCb->data.setMotionEventState.reportRateHz);
+diff --git a/moonlight-common-c/moonlight-common-c/src/InputStream.c b/moonlight-common-c/moonlight-common-c/src/InputStream.c
+index 0286178..a87a8ac 100644
+--- a/moonlight-common-c/moonlight-common-c/src/InputStream.c
++++ b/moonlight-common-c/moonlight-common-c/src/InputStream.c
+@@ -1586,8 +1586,12 @@ int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType, fl
+         return -3;
+     }
+ 
+-    // This is a protocol extension only supported with Sunshine
+-    if (!(SunshineFeatureFlags & LI_FF_CONTROLLER_TOUCH_EVENTS)) {
++    // This is a protocol extension only supported with Sunshine. Also allow it
++    // when a Sunshine host explicitly requested motion for this controller,
++    // even if it doesn't advertise LI_FF_CONTROLLER_TOUCH_EVENTS.
++    if (!(SunshineFeatureFlags & LI_FF_CONTROLLER_TOUCH_EVENTS) &&
++        !(IS_SUNSHINE() && controllerNumber < MOTION_REQUESTED_CONTROLLERS &&
++          (MotionRequestedMask[controllerNumber] & (1 << motionType)))) {
+         return LI_ERR_UNSUPPORTED;
+     }
+ 
+diff --git a/moonlight-common-c/moonlight-common-c/src/Limelight-internal.h b/moonlight-common-c/moonlight-common-c/src/Limelight-internal.h
+index 8927353..821ede8 100644
+--- a/moonlight-common-c/moonlight-common-c/src/Limelight-internal.h
++++ b/moonlight-common-c/moonlight-common-c/src/Limelight-internal.h
+@@ -44,6 +44,11 @@ extern uint32_t ControlConnectData;
+ 
+ extern uint32_t SunshineFeatureFlags;
+ 
++// Per-controller bitmask of (1 << motionType) the host has requested
++// via the motion event state control message.
++#define MOTION_REQUESTED_CONTROLLERS 16
++extern uint8_t MotionRequestedMask[MOTION_REQUESTED_CONTROLLERS];
++
+ // Encryption flags shared by Sunshine and Moonlight in RTSP
+ #define SS_ENC_CONTROL_V2 0x01
+ #define SS_ENC_VIDEO 0x02

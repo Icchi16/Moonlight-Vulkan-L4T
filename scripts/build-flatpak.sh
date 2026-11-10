@@ -45,9 +45,11 @@ bundle="$DIST_DIR/moonlight-nightly-vulkan.flatpak"
 build_info="$DIST_DIR/build-info.txt"
 latency_patch_name="moonlight-mspeedo-vrr.patch"
 fsr_patch_name="moonlight-fsr1-linux.patch"
+gyro_patch_name="moonlight-gyro-vhf.patch"
 cp "$ROOT_DIR/patches/$latency_patch_name" "$manifest_repo/$latency_patch_name"
 cp "$ROOT_DIR/patches/$fsr_patch_name" "$manifest_repo/$fsr_patch_name"
-export latency_patch_name fsr_patch_name
+cp "$ROOT_DIR/patches/$gyro_patch_name" "$manifest_repo/$gyro_patch_name"
+export latency_patch_name fsr_patch_name gyro_patch_name
 cp "$base_manifest" "$manifest"
 
 # Chỉ thay source Moonlight và environment; dependencies/patch từ Flathub được giữ nguyên.
@@ -83,6 +85,9 @@ moonlight["sources"].extend([{
 }, {
     "type": "patch",
     "path": os.environ["latency_patch_name"],
+}, {
+    "type": "patch",
+    "path": os.environ["gyro_patch_name"],
 }])
 with open(p, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
@@ -94,7 +99,7 @@ runtime_version="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); 
 sdk="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["sdk"])' "$manifest")"
 flatpak install --user -y flathub "$runtime//$runtime_version" "$sdk//$runtime_version"
 
-note "Build Flatpak Moonlight $MOONLIGHT_SHA + FSR1 + mspeedo VRR + Vulkan Video"
+note "Build Flatpak Moonlight $MOONLIGHT_SHA + FSR1 + mspeedo VRR + gyro VHF + Vulkan Video"
 "${flatpak_builder[@]}" --user --force-clean --install-deps-from=flathub \
     --repo="$flatpak_work/repo" "$builder_dir" "$manifest"
 flatpak build-bundle "$flatpak_work/repo" "$bundle" \
@@ -105,5 +110,7 @@ write_build_info flatpak-fsr1-mspeedo "$build_info"
     printf 'decoder_policy=LIBVA_DRIVER_NAME=invalid\n'
     printf 'video_enhancement=FSR1-libplacebo\n'
     printf 'video_enhancement_patch=moonlight-fsr1-linux.patch\n'
+    printf 'video_enhancement_options=fsr_sharpness_slider,fsr_10bit_sdr_dither(PLVK_FSR_10BIT=0 to disable)\n'
+    printf 'gyro_patch=moonlight-gyro-vhf.patch\n'
 } >> "$build_info"
 note "Xong: $bundle"
